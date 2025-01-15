@@ -25,16 +25,19 @@
 
 package org.geysermc.geyser.entity.type.living.animal;
 
-import com.github.steveice10.mc.protocol.data.game.entity.metadata.Pose;
-import com.github.steveice10.mc.protocol.data.game.entity.metadata.type.IntEntityMetadata;
-import com.github.steveice10.mc.protocol.data.game.entity.metadata.type.ObjectEntityMetadata;
-import com.nukkitx.math.vector.Vector3f;
-import com.nukkitx.protocol.bedrock.data.entity.EntityData;
-import com.nukkitx.protocol.bedrock.data.entity.EntityFlag;
+import org.checkerframework.checker.nullness.qual.Nullable;
+import org.cloudburstmc.math.vector.Vector3f;
+import org.cloudburstmc.protocol.bedrock.data.entity.EntityDataTypes;
+import org.cloudburstmc.protocol.bedrock.data.entity.EntityFlag;
 import org.geysermc.geyser.entity.EntityDefinition;
 import org.geysermc.geyser.entity.type.Entity;
-import org.geysermc.geyser.registry.type.ItemMapping;
+import org.geysermc.geyser.item.type.Item;
 import org.geysermc.geyser.session.GeyserSession;
+import org.geysermc.geyser.session.cache.tags.ItemTag;
+import org.geysermc.geyser.session.cache.tags.Tag;
+import org.geysermc.mcprotocollib.protocol.data.game.entity.metadata.Pose;
+import org.geysermc.mcprotocollib.protocol.data.game.entity.metadata.type.IntEntityMetadata;
+import org.geysermc.mcprotocollib.protocol.data.game.entity.metadata.type.ObjectEntityMetadata;
 
 import java.util.OptionalInt;
 import java.util.UUID;
@@ -55,7 +58,7 @@ public class FrogEntity extends AnimalEntity {
 
     public void setFrogVariant(IntEntityMetadata entityMetadata) {
         int variant = entityMetadata.getPrimitiveValue();
-        dirtyMetadata.put(EntityData.VARIANT, switch (variant) {
+        dirtyMetadata.put(EntityDataTypes.VARIANT, switch (variant) {
             case 1 -> 2; // White
             case 2 -> 1; // Green
             default -> variant;
@@ -67,15 +70,16 @@ public class FrogEntity extends AnimalEntity {
         if (entityId.isPresent()) {
             Entity entity = session.getEntityCache().getEntityByJavaId(entityId.getAsInt());
             if (entity != null) {
-                dirtyMetadata.put(EntityData.TARGET_EID, entity.getGeyserId());
+                dirtyMetadata.put(EntityDataTypes.TARGET_EID, entity.getGeyserId());
             }
         } else {
-            dirtyMetadata.put(EntityData.TARGET_EID, 0L);
+            dirtyMetadata.put(EntityDataTypes.TARGET_EID, 0L);
         }
     }
 
     @Override
-    public boolean canEat(String javaIdentifierStripped, ItemMapping mapping) {
-        return mapping.getJavaId() == session.getItemMappings().getStoredItems().slimeBall();
+    @Nullable
+    protected Tag<Item> getFoodTag() {
+        return ItemTag.FROG_FOOD;
     }
 }

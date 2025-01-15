@@ -25,16 +25,15 @@
 
 package org.geysermc.geyser.translator.protocol.java.level;
 
-import com.github.steveice10.mc.protocol.packet.ingame.clientbound.level.ClientboundBlockDestructionPacket;
-import com.github.steveice10.opennbt.tag.builtin.CompoundTag;
-import com.nukkitx.protocol.bedrock.data.LevelEventType;
-import com.nukkitx.protocol.bedrock.packet.LevelEventPacket;
-import org.geysermc.geyser.registry.BlockRegistries;
+import org.cloudburstmc.protocol.bedrock.data.LevelEvent;
+import org.cloudburstmc.protocol.bedrock.packet.LevelEventPacket;
+import org.geysermc.geyser.level.block.type.BlockState;
 import org.geysermc.geyser.registry.type.ItemMapping;
 import org.geysermc.geyser.session.GeyserSession;
 import org.geysermc.geyser.translator.protocol.PacketTranslator;
 import org.geysermc.geyser.translator.protocol.Translator;
 import org.geysermc.geyser.util.BlockUtils;
+import org.geysermc.mcprotocollib.protocol.packet.ingame.clientbound.level.ClientboundBlockDestructionPacket;
 
 @Translator(packet = ClientboundBlockDestructionPacket.class)
 public class JavaBlockDestructionTranslator extends PacketTranslator<ClientboundBlockDestructionPacket> {
@@ -42,10 +41,15 @@ public class JavaBlockDestructionTranslator extends PacketTranslator<Clientbound
     @Override
     public void translate(GeyserSession session, ClientboundBlockDestructionPacket packet) {
         int state = session.getGeyser().getWorldManager().getBlockAt(session, packet.getPosition().getX(), packet.getPosition().getY(), packet.getPosition().getZ());
-        int breakTime = (int) (65535 / Math.ceil(BlockUtils.getBreakTime(session, BlockRegistries.JAVA_BLOCKS.get(state), ItemMapping.AIR, new CompoundTag(""), false) * 20));
+        int breakTime = 12; //(int) (65535 / Math.ceil(BlockUtils.getBreakTime(session, BlockState.of(state).block(), ItemMapping.AIR, null, false)));
+        // TODO we need to send a "total" time to Bedrock.
+        // Current plan:
+        // - start with block destroy time (if applicable)
+        // - track the time in ticks between stages
+        // - attempt to "extrapolate" to a value for Bedrock
         LevelEventPacket levelEventPacket = new LevelEventPacket();
         levelEventPacket.setPosition(packet.getPosition().toFloat());
-        levelEventPacket.setType(LevelEventType.BLOCK_START_BREAK);
+        levelEventPacket.setType(LevelEvent.BLOCK_START_BREAK);
 
         switch (packet.getStage()) {
             case STAGE_1 -> levelEventPacket.setData(breakTime);
@@ -59,7 +63,7 @@ public class JavaBlockDestructionTranslator extends PacketTranslator<Clientbound
             case STAGE_9 -> levelEventPacket.setData(breakTime * 9);
             case STAGE_10 -> levelEventPacket.setData(breakTime * 10);
             case RESET -> {
-                levelEventPacket.setType(LevelEventType.BLOCK_STOP_BREAK);
+                levelEventPacket.setType(LevelEvent.BLOCK_STOP_BREAK);
                 levelEventPacket.setData(0);
             }
         }

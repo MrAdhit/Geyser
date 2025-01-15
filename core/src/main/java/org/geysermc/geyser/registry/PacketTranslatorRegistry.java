@@ -25,12 +25,13 @@
 
 package org.geysermc.geyser.registry;
 
-import com.github.steveice10.mc.protocol.packet.ingame.clientbound.ClientboundTabListPacket;
-import com.github.steveice10.mc.protocol.packet.ingame.clientbound.level.ClientboundLightUpdatePacket;
-import com.nukkitx.protocol.bedrock.BedrockPacket;
+import org.geysermc.mcprotocollib.protocol.packet.ingame.clientbound.ClientboundDelimiterPacket;
+import org.geysermc.mcprotocollib.protocol.packet.ingame.clientbound.ClientboundTabListPacket;
+import org.geysermc.mcprotocollib.protocol.packet.ingame.clientbound.level.ClientboundChunkBatchStartPacket;
+import org.geysermc.mcprotocollib.protocol.packet.ingame.clientbound.level.ClientboundLightUpdatePacket;
 import io.netty.channel.EventLoop;
-import org.geysermc.common.PlatformType;
 import org.geysermc.geyser.GeyserImpl;
+import org.geysermc.geyser.erosion.ErosionCancellationException;
 import org.geysermc.geyser.registry.loader.RegistryLoaders;
 import org.geysermc.geyser.session.GeyserSession;
 import org.geysermc.geyser.text.GeyserLocale;
@@ -44,6 +45,8 @@ public class PacketTranslatorRegistry<T> extends AbstractMappedRegistry<Class<? 
     private static final Set<Class<?>> IGNORED_PACKETS = Collections.newSetFromMap(new IdentityHashMap<>());
 
     static {
+        IGNORED_PACKETS.add(ClientboundChunkBatchStartPacket.class); // we don't track chunk batch sizes/periods
+        IGNORED_PACKETS.add(ClientboundDelimiterPacket.class); // Not implemented, spams logs
         IGNORED_PACKETS.add(ClientboundLightUpdatePacket.class); // Light is handled on Bedrock for us
         IGNORED_PACKETS.add(ClientboundTabListPacket.class); // Cant be implemented in Bedrock
     }
@@ -53,24 +56,25 @@ public class PacketTranslatorRegistry<T> extends AbstractMappedRegistry<Class<? 
     }
 
     @SuppressWarnings("unchecked")
-    public <P extends T> boolean translate(Class<? extends P> clazz, P packet, GeyserSession session) {
+    public <P extends T> boolean translate(Class<? extends P> clazz, P packet, GeyserSession session, boolean canRunImmediately) {
         if (session.getUpstream().isClosed() || session.isClosed()) {
             return false;
         }
 
         PacketTranslator<P> translator = (PacketTranslator<P>) this.mappings.get(clazz);
         if (translator != null) {
-            EventLoop eventLoop = session.getEventLoop();
-            if (!translator.shouldExecuteInEventLoop() || eventLoop.inEventLoop()) {
+            EventLoop eventLoop = session.getTickEventLoop();
+            if (canRunImmediately || !translator.shouldExecuteInEventLoop() || eventLoop.inEventLoop()) {
                 translate0(session, translator, packet);
             } else {
                 eventLoop.execute(() -> translate0(session, translator, packet));
             }
             return true;
         } else {
-            if ((GeyserImpl.getInstance().getPlatformType() != PlatformType.STANDALONE || !(packet instanceof BedrockPacket)) && !IGNORED_PACKETS.contains(clazz)) {
-                // Other debug logs already take care of Bedrock packets for us if on standalone
-                GeyserImpl.getInstance().getLogger().debug("Could not find packet for " + (packet.toString().length() > 25 ? packet.getClass().getSimpleName() : packet));
+            if (GeyserImpl.getInstance().getConfig().isDebugMode()) {
+                if (!IGNORED_PACKETS.contains(clazz)) {
+                    GeyserImpl.getInstance().getLogger().debug("Could not find packet for " + (packet.toString().length() > 25 ? packet.getClass().getSimpleName() : packet));
+                }
             }
 
             return false;
@@ -84,6 +88,8 @@ public class PacketTranslatorRegistry<T> extends AbstractMappedRegistry<Class<? 
 
         try {
             translator.translate(session, packet);
+        } catch (ErosionCancellationException ex) {
+            GeyserImpl.getInstance().getLogger().debug("Caught ErosionCancellationException");
         } catch (Throwable ex) {
             GeyserImpl.getInstance().getLogger().error(GeyserLocale.getLocaleStringLog("geyser.network.translator.packet.failed", packet.getClass().getSimpleName()), ex);
             ex.printStackTrace();

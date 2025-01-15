@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2019-2022 GeyserMC. http://geysermc.org
+ * Copyright (c) 2019-2024 GeyserMC. http://geysermc.org
  *
  * Permission is hereby granted, free of charge, to any person obtaining a copy
  * of this software and associated documentation files (the "Software"), to deal
@@ -26,14 +26,14 @@
 package org.geysermc.geyser.skin;
 
 import org.geysermc.geyser.GeyserImpl;
+import org.geysermc.geyser.api.skin.Skin;
 import org.geysermc.geyser.util.AssetUtils;
 
 import javax.imageio.ImageIO;
 import java.awt.image.BufferedImage;
-import java.io.File;
-import java.io.FileInputStream;
 import java.io.IOException;
 import java.io.InputStream;
+import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.Objects;
 import java.util.UUID;
@@ -68,7 +68,7 @@ public final class ProvidedSkins {
     }
 
     public static final class ProvidedSkin {
-        private SkinProvider.Skin data;
+        private Skin data;
         private final boolean slim;
 
         ProvidedSkin(String asset, boolean slim) {
@@ -80,14 +80,14 @@ public final class ProvidedSkins {
                     .resolve(slim ? "slim" : "wide");
             String assetName = asset.substring(asset.lastIndexOf('/') + 1);
 
-            File location = folder.resolve(assetName).toFile();
-            AssetUtils.addTask(!location.exists(), new AssetUtils.ClientJarTask("assets/minecraft/" + asset,
+            Path location = folder.resolve(assetName);
+            AssetUtils.addTask(!Files.exists(location), new AssetUtils.ClientJarTask("assets/minecraft/" + asset,
                     (stream) -> AssetUtils.saveFile(location, stream),
                     () -> {
                         try {
                             // TODO lazy initialize?
                             BufferedImage image;
-                            try (InputStream stream = new FileInputStream(location)) {
+                            try (InputStream stream = Files.newInputStream(location)) {
                                 image = ImageIO.read(stream);
                             }
 
@@ -95,14 +95,14 @@ public final class ProvidedSkins {
                             image.flush();
 
                             String identifier = "geysermc:" + assetName + "_" + (slim ? "slim" : "wide");
-                            this.data = new SkinProvider.Skin(-1, identifier, byteData);
+                            this.data = new Skin(identifier, byteData, true);
                         } catch (IOException e) {
                             e.printStackTrace();
                         }
             }));
         }
 
-        public SkinProvider.Skin getData() {
+        public Skin getData() {
             // Fall back to the default skin if we can't load our skins, or it's not loaded yet.
             return Objects.requireNonNullElse(data, SkinProvider.EMPTY_SKIN);
         }
