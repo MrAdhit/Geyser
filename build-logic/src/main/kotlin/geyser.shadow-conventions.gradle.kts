@@ -7,7 +7,6 @@ plugins {
 
 tasks {
     named<Jar>("jar") {
-        archiveClassifier.set("unshaded")
         from(project.rootProject.file("LICENSE"))
     }
     val shadowJar = named<ShadowJar>("shadowJar") {
@@ -23,6 +22,11 @@ tasks {
                     println("Excluding $string from ${project.name}")
                     exclude(dependency(string))
                 }
+            }
+
+            sJar.dependencies {
+                exclude(dependency("org.checkerframework:checker-qual:.*"))
+                exclude(dependency("org.jetbrains:annotations:.*"))
             }
         }
     }

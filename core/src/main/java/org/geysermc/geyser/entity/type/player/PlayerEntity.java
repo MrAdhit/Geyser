@@ -25,45 +25,49 @@
 
 package org.geysermc.geyser.entity.type.player;
 
-import com.github.steveice10.mc.protocol.data.game.entity.metadata.EntityMetadata;
-import com.github.steveice10.mc.protocol.data.game.entity.metadata.Pose;
-import com.github.steveice10.mc.protocol.data.game.entity.metadata.type.BooleanEntityMetadata;
-import com.github.steveice10.mc.protocol.data.game.entity.metadata.type.ByteEntityMetadata;
-import com.github.steveice10.mc.protocol.data.game.entity.metadata.type.FloatEntityMetadata;
-import com.github.steveice10.mc.protocol.data.game.scoreboard.ScoreboardPosition;
-import com.github.steveice10.mc.protocol.data.game.scoreboard.TeamColor;
-import com.github.steveice10.opennbt.tag.builtin.CompoundTag;
-import com.nukkitx.math.vector.Vector3f;
-import com.nukkitx.math.vector.Vector3i;
-import com.nukkitx.protocol.bedrock.data.*;
-import com.nukkitx.protocol.bedrock.data.command.CommandPermission;
-import com.nukkitx.protocol.bedrock.data.entity.EntityData;
-import com.nukkitx.protocol.bedrock.data.entity.EntityFlag;
-import com.nukkitx.protocol.bedrock.data.entity.EntityLinkData;
-import com.nukkitx.protocol.bedrock.packet.*;
 import lombok.Getter;
 import lombok.Setter;
 import net.kyori.adventure.text.Component;
+import org.checkerframework.checker.nullness.qual.Nullable;
+import org.cloudburstmc.math.vector.Vector3f;
+import org.cloudburstmc.math.vector.Vector3i;
+import org.cloudburstmc.nbt.NbtMap;
+import org.cloudburstmc.protocol.bedrock.data.Ability;
+import org.cloudburstmc.protocol.bedrock.data.AbilityLayer;
+import org.cloudburstmc.protocol.bedrock.data.GameType;
+import org.cloudburstmc.protocol.bedrock.data.PlayerPermission;
+import org.cloudburstmc.protocol.bedrock.data.command.CommandPermission;
+import org.cloudburstmc.protocol.bedrock.data.entity.EntityDataTypes;
+import org.cloudburstmc.protocol.bedrock.data.entity.EntityFlag;
+import org.cloudburstmc.protocol.bedrock.data.entity.EntityLinkData;
+import org.cloudburstmc.protocol.bedrock.data.inventory.ItemData;
+import org.cloudburstmc.protocol.bedrock.packet.AddPlayerPacket;
+import org.cloudburstmc.protocol.bedrock.packet.MovePlayerPacket;
+import org.cloudburstmc.protocol.bedrock.packet.SetEntityLinkPacket;
+import org.cloudburstmc.protocol.bedrock.packet.UpdateAttributesPacket;
+import org.geysermc.geyser.api.entity.type.player.GeyserPlayerEntity;
 import org.geysermc.geyser.entity.EntityDefinitions;
+import org.geysermc.geyser.entity.attribute.GeyserAttributeType;
 import org.geysermc.geyser.entity.type.Entity;
 import org.geysermc.geyser.entity.type.LivingEntity;
 import org.geysermc.geyser.entity.type.living.animal.tameable.ParrotEntity;
-import org.geysermc.geyser.scoreboard.Objective;
-import org.geysermc.geyser.scoreboard.Score;
-import org.geysermc.geyser.scoreboard.Team;
-import org.geysermc.geyser.scoreboard.UpdateType;
 import org.geysermc.geyser.session.GeyserSession;
-import org.geysermc.geyser.translator.text.MessageTranslator;
+import org.geysermc.geyser.util.ChunkUtils;
+import org.geysermc.mcprotocollib.protocol.data.game.entity.metadata.EntityMetadata;
+import org.geysermc.mcprotocollib.protocol.data.game.entity.metadata.Pose;
+import org.geysermc.mcprotocollib.protocol.data.game.entity.metadata.type.BooleanEntityMetadata;
+import org.geysermc.mcprotocollib.protocol.data.game.entity.metadata.type.ByteEntityMetadata;
+import org.geysermc.mcprotocollib.protocol.data.game.entity.metadata.type.FloatEntityMetadata;
 
-import javax.annotation.Nullable;
 import java.util.Collections;
 import java.util.List;
+import java.util.Objects;
 import java.util.Optional;
 import java.util.UUID;
 import java.util.concurrent.TimeUnit;
 
 @Getter @Setter
-public class PlayerEntity extends LivingEntity {
+public class PlayerEntity extends LivingEntity implements GeyserPlayerEntity {
     public static final float SNEAKING_POSE_HEIGHT = 1.5f;
     protected static final List<AbilityLayer> BASE_ABILITY_LAYER;
 
@@ -78,22 +82,26 @@ public class PlayerEntity extends LivingEntity {
 
     private String username;
 
+    private String cachedScore = "";
+    private boolean scoreVisible = true;
+
     /**
      * The textures property from the GameProfile.
      */
     @Nullable
     private String texturesProperty;
 
+    @Nullable
     private Vector3i bedPosition;
 
     /**
      * Saves the parrot currently on the player's left shoulder; otherwise null
      */
-    private ParrotEntity leftParrot;
+    private @Nullable ParrotEntity leftParrot;
     /**
      * Saves the parrot currently on the player's right shoulder; otherwise null
      */
-    private ParrotEntity rightParrot;
+    private @Nullable ParrotEntity rightParrot;
 
     public PlayerEntity(GeyserSession session, int entityId, long geyserId, UUID uuid, Vector3f position,
                         Vector3f motion, float yaw, float pitch, float headYaw, String username, @Nullable String texturesProperty) {
@@ -108,22 +116,11 @@ public class PlayerEntity extends LivingEntity {
     protected void initializeMetadata() {
         super.initializeMetadata();
         // For the OptionalPack, set all bits as invisible by default as this matches Java Edition behavior
-        dirtyMetadata.put(EntityData.MARK_VARIANT, 0xff);
+        dirtyMetadata.put(EntityDataTypes.MARK_VARIANT, 0xff);
     }
 
     @Override
     public void spawnEntity() {
-        // Check to see if the player should have a belowname counterpart added
-        Objective objective = session.getWorldCache().getScoreboard().getObjectiveSlots().get(ScoreboardPosition.BELOW_NAME);
-        if (objective != null) {
-            setBelowNameText(objective);
-        }
-
-        // Update in case this entity has been despawned, then respawned
-        this.nametag = this.username;
-        // The name can't be updated later (the entity metadata for it is ignored), so we need to check for this now
-        updateDisplayName(session.getWorldCache().getScoreboard().getTeamFor(username));
-
         AddPlayerPacket addPlayerPacket = new AddPlayerPacket();
         addPlayerPacket.setUuid(uuid);
         addPlayerPacket.setUsername(username);
@@ -133,13 +130,17 @@ public class PlayerEntity extends LivingEntity {
         addPlayerPacket.setRotation(getBedrockRotation());
         addPlayerPacket.setMotion(motion);
         addPlayerPacket.setHand(hand);
-        addPlayerPacket.getAdventureSettings().setCommandPermission(CommandPermission.NORMAL);
+        addPlayerPacket.getAdventureSettings().setCommandPermission(CommandPermission.ANY);
         addPlayerPacket.getAdventureSettings().setPlayerPermission(PlayerPermission.MEMBER);
         addPlayerPacket.setDeviceId("");
         addPlayerPacket.setPlatformChatId("");
         addPlayerPacket.setGameType(GameType.SURVIVAL); //TODO
         addPlayerPacket.setAbilityLayers(BASE_ABILITY_LAYER); // Recommended to be added since 1.19.10, but only needed here for permissions viewing
         addPlayerPacket.getMetadata().putFlags(flags);
+
+        // Since 1.20.60, the nametag does not show properly if this is not set :/
+        // The nametag does disappear properly when the player is invisible though.
+        dirtyMetadata.put(EntityDataTypes.NAMETAG_ALWAYS_SHOW, (byte) 1);
         dirtyMetadata.apply(addPlayerPacket.getMetadata());
 
         setFlagsDirty(false);
@@ -148,15 +149,37 @@ public class PlayerEntity extends LivingEntity {
         session.sendUpstreamPacket(addPlayerPacket);
     }
 
+    @Override
+    public void despawnEntity() {
+        super.despawnEntity();
+
+        // Since we re-use player entities: Clear flags, held item, etc
+        this.resetMetadata();
+        this.nametag = username;
+        this.hand = ItemData.AIR;
+        this.offhand = ItemData.AIR;
+        this.boots = ItemData.AIR;
+        this.leggings = ItemData.AIR;
+        this.chestplate = ItemData.AIR;
+        this.helmet = ItemData.AIR;
+    }
+
+    public void resetMetadata() {
+        // Reset all metadata to their default values
+        // This is used when a player respawns
+        this.flags.clear();
+        this.initializeMetadata();
+
+        // Explicitly reset all metadata not handled by initializeMetadata
+        setParrot(null, true);
+        setParrot(null, false);
+    }
+
     public void sendPlayer() {
         if (session.getEntityCache().getPlayerEntity(uuid) == null)
             return;
 
-        if (session.getEntityCache().getEntityByGeyserId(geyserId) == null) {
-            session.getEntityCache().spawnEntity(this);
-        } else {
-            spawnEntity();
-        }
+        session.getEntityCache().spawnEntity(this);
     }
 
     @Override
@@ -228,18 +251,40 @@ public class PlayerEntity extends LivingEntity {
         }
     }
 
-    public void updateRotation(float yaw, float pitch, float headYaw, boolean isOnGround) {
-        moveRelative(0, 0, 0, yaw, pitch, headYaw, isOnGround);
-    }
-
     @Override
     public void setPosition(Vector3f position) {
-        super.setPosition(position.add(0, definition.offset(), 0));
+        if (this.bedPosition != null) {
+            // As of Bedrock 1.21.22 and Fabric 1.21.1
+            // Messes with Bedrock if we send this to the client itself, though.
+            super.setPosition(position.up(0.2f));
+        } else {
+            super.setPosition(position.add(0, definition.offset(), 0));
+        }
     }
 
     @Override
-    public Vector3i setBedPosition(EntityMetadata<Optional<Vector3i>, ?> entityMetadata) {
-        return bedPosition = super.setBedPosition(entityMetadata);
+    public @Nullable Vector3i setBedPosition(EntityMetadata<Optional<Vector3i>, ?> entityMetadata) {
+        bedPosition = super.setBedPosition(entityMetadata);
+        if (bedPosition != null) {
+            // Required to sync position of entity to bed
+            // Fixes https://github.com/GeyserMC/Geyser/issues/3595 on vanilla 1.19.3 servers - did not happen on Paper
+            this.setPosition(bedPosition.toFloat());
+
+            // TODO evaluate if needed
+            int bed = session.getGeyser().getWorldManager().getBlockAt(session, bedPosition);
+            // Bed has to be updated, or else player is floating in the air
+            ChunkUtils.updateBlock(session, bed, bedPosition);
+
+            // Indicate that the player should enter the sleep cycle
+            // Has to be a byte or it does not work
+            // (Bed position is what actually triggers sleep - "pose" is only optional)
+            dirtyMetadata.put(EntityDataTypes.PLAYER_FLAGS, (byte) 2);
+        } else {
+            // Player is no longer sleeping
+            dirtyMetadata.put(EntityDataTypes.PLAYER_FLAGS, (byte) 0);
+            return null;
+        }
+        return bedPosition;
     }
 
     public void setAbsorptionHearts(FloatEntityMetadata entityMetadata) {
@@ -248,7 +293,7 @@ public class PlayerEntity extends LivingEntity {
         attributesPacket.setRuntimeEntityId(geyserId);
         // Setting to a higher maximum since plugins/datapacks can probably extend the Bedrock soft limit
         attributesPacket.setAttributes(Collections.singletonList(
-                new AttributeData("minecraft:absorption", 0.0f, 1024f, entityMetadata.getPrimitiveValue(), 0.0f)));
+                GeyserAttributeType.ABSORPTION.getAttribute(entityMetadata.getPrimitiveValue())));
         session.sendUpstreamPacket(attributesPacket);
     }
 
@@ -257,14 +302,14 @@ public class PlayerEntity extends LivingEntity {
         // In Java Edition, a bit being set means that part should be enabled
         // However, to ensure that the pack still works on other servers, we invert the bit so all values by default
         // are true (0).
-        dirtyMetadata.put(EntityData.MARK_VARIANT, ~entityMetadata.getPrimitiveValue() & 0xff);
+        dirtyMetadata.put(EntityDataTypes.MARK_VARIANT, ~entityMetadata.getPrimitiveValue() & 0xff);
     }
 
-    public void setLeftParrot(EntityMetadata<CompoundTag, ?> entityMetadata) {
+    public void setLeftParrot(EntityMetadata<NbtMap, ?> entityMetadata) {
         setParrot(entityMetadata.getValue(), true);
     }
 
-    public void setRightParrot(EntityMetadata<CompoundTag, ?> entityMetadata) {
+    public void setRightParrot(EntityMetadata<NbtMap, ?> entityMetadata) {
         setParrot(entityMetadata.getValue(), false);
     }
 
@@ -272,7 +317,7 @@ public class PlayerEntity extends LivingEntity {
      * Sets the parrot occupying the shoulder. Bedrock Edition requires a full entity whereas Java Edition just
      * spawns it from the NBT data provided
      */
-    private void setParrot(CompoundTag tag, boolean isLeft) {
+    protected void setParrot(NbtMap tag, boolean isLeft) {
         if (tag != null && !tag.isEmpty()) {
             if ((isLeft && leftParrot != null) || (!isLeft && rightParrot != null)) {
                 // No need to update a parrot's data when it already exists
@@ -282,15 +327,15 @@ public class PlayerEntity extends LivingEntity {
             ParrotEntity parrot = new ParrotEntity(session, 0, session.getEntityCache().getNextEntityId().incrementAndGet(),
                     null, EntityDefinitions.PARROT, position, motion, getYaw(), getPitch(), getHeadYaw());
             parrot.spawnEntity();
-            parrot.getDirtyMetadata().put(EntityData.VARIANT, tag.get("Variant").getValue());
+            parrot.getDirtyMetadata().put(EntityDataTypes.VARIANT, (Integer) tag.get("Variant"));
             // Different position whether the parrot is left or right
             float offset = isLeft ? 0.4f : -0.4f;
-            parrot.getDirtyMetadata().put(EntityData.RIDER_SEAT_POSITION, Vector3f.from(offset, -0.22, -0.1));
-            parrot.getDirtyMetadata().put(EntityData.RIDER_ROTATION_LOCKED, 1);
+            parrot.getDirtyMetadata().put(EntityDataTypes.SEAT_OFFSET, Vector3f.from(offset, -0.22, -0.1));
+            parrot.getDirtyMetadata().put(EntityDataTypes.SEAT_LOCK_RIDER_ROTATION, true);
             parrot.updateBedrockMetadata();
             SetEntityLinkPacket linkPacket = new SetEntityLinkPacket();
             EntityLinkData.Type type = isLeft ? EntityLinkData.Type.RIDER : EntityLinkData.Type.PASSENGER;
-            linkPacket.setEntityLink(new EntityLinkData(geyserId, parrot.getGeyserId(), type, false, false));
+            linkPacket.setEntityLink(new EntityLinkData(geyserId, parrot.getGeyserId(), type, false, false, 0f));
             // Delay, or else spawned-in players won't get the link
             // TODO: Find a better solution.
             session.scheduleInEventLoop(() -> session.sendUpstreamPacket(linkPacket), 500, TimeUnit.MILLISECONDS);
@@ -313,42 +358,61 @@ public class PlayerEntity extends LivingEntity {
     }
 
     @Override
+    public String getDisplayName() {
+        return username;
+    }
+
+    @Override
     public void setDisplayName(EntityMetadata<Optional<Component>, ?> entityMetadata) {
         // Doesn't do anything for players
     }
 
-    //todo this will become common entity logic once UUID support is implemented for them
-    public void updateDisplayName(@Nullable Team team) {
-        boolean needsUpdate;
-        if (team != null) {
-            String newDisplayName;
-            if (team.isVisibleFor(session.getPlayerEntity().getUsername())) {
-                TeamColor color = team.getColor();
-                String chatColor = MessageTranslator.toChatColor(color);
-                // We have to emulate what modern Java text already does for us and add the color to each section
-                String prefix = team.getCurrentData().getPrefix();
-                String suffix = team.getCurrentData().getSuffix();
-                newDisplayName = chatColor + prefix + chatColor + this.username + chatColor + suffix;
-            } else {
-                // The name is not visible to the session player; clear name
-                newDisplayName = "";
-            }
-            needsUpdate = !newDisplayName.equals(this.nametag);
-            this.nametag = newDisplayName;
-        } else {
-            // The name has reset, if it was previously something else
-            needsUpdate = !this.nametag.equals(this.username);
-            this.nametag = this.username;
-        }
+    @Override
+    public String teamIdentifier() {
+        return username;
+    }
 
-        if (needsUpdate) {
-            dirtyMetadata.put(EntityData.NAMETAG, this.nametag);
+    @Override
+    protected void setNametag(@Nullable String nametag, boolean fromDisplayName) {
+        // when fromDisplayName, LivingEntity will call scoreboard code. After that
+        // setNametag is called again with fromDisplayName on false
+        if (nametag == null && !fromDisplayName) {
+            // nametag = null means reset, so reset it back to username
+            nametag = username;
         }
+        super.setNametag(nametag, fromDisplayName);
     }
 
     @Override
     public void setDisplayNameVisible(BooleanEntityMetadata entityMetadata) {
         // Doesn't do anything for players
+    }
+
+    public void setBelowNameText(String text) {
+        if (text == null) {
+            text = "";
+        }
+
+        boolean changed = !Objects.equals(cachedScore, text);
+        cachedScore = text;
+        if (isScoreVisible() && changed) {
+            dirtyMetadata.put(EntityDataTypes.SCORE, text);
+        }
+    }
+
+    @Override
+    protected void scoreVisibility(boolean show) {
+        boolean visibilityChanged = scoreVisible != show;
+        scoreVisible = show;
+        if (!visibilityChanged) {
+            return;
+        }
+        // if the player has no cachedScore, we never have to change the score.
+        // hide = set to "" (does nothing), show = change from "" (does nothing)
+        if (cachedScore.isEmpty()) {
+            return;
+        }
+        dirtyMetadata.put(EntityDataTypes.SCORE, show ? cachedScore : "");
     }
 
     @Override
@@ -377,37 +441,15 @@ public class PlayerEntity extends LivingEntity {
         setBoundingBoxHeight(height);
     }
 
-    public void setBelowNameText(Objective objective) {
-        if (objective != null && objective.getUpdateType() != UpdateType.REMOVE) {
-            int amount;
-            Score score = objective.getScores().get(username);
-            if (score != null) {
-                amount = score.getCurrentData().getScore();
-            } else {
-                amount = 0;
-            }
-            String displayString = amount + " " + objective.getDisplayName();
-
-            if (valid) {
-                // Already spawned - we still need to run the rest of this code because the spawn packet will be
-                // providing the information
-                SetEntityDataPacket packet = new SetEntityDataPacket();
-                packet.setRuntimeEntityId(geyserId);
-                packet.getMetadata().put(EntityData.SCORE_TAG, displayString);
-                session.sendUpstreamPacket(packet);
-            }
-        } else if (valid) {
-            SetEntityDataPacket packet = new SetEntityDataPacket();
-            packet.setRuntimeEntityId(geyserId);
-            packet.getMetadata().put(EntityData.SCORE_TAG, "");
-            session.sendUpstreamPacket(packet);
-        }
-    }
-
     /**
      * @return the UUID that should be used when dealing with Bedrock's tab list.
      */
     public UUID getTabListUuid() {
         return getUuid();
+    }
+
+    @Override
+    public Vector3f position() {
+        return this.position.down(definition.offset());
     }
 }

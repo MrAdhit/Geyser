@@ -25,25 +25,22 @@
 
 package org.geysermc.geyser.translator.protocol.java.entity.player;
 
-import com.github.steveice10.mc.protocol.data.game.entity.player.PositionElement;
-import com.github.steveice10.mc.protocol.packet.ingame.clientbound.entity.player.ClientboundPlayerPositionPacket;
-import com.github.steveice10.mc.protocol.packet.ingame.serverbound.level.ServerboundAcceptTeleportationPacket;
-import com.github.steveice10.mc.protocol.packet.ingame.serverbound.player.ServerboundMovePlayerPosRotPacket;
-import com.nukkitx.math.vector.Vector3f;
-import com.nukkitx.protocol.bedrock.data.entity.EntityLinkData;
-import com.nukkitx.protocol.bedrock.packet.ChunkRadiusUpdatedPacket;
-import com.nukkitx.protocol.bedrock.packet.MovePlayerPacket;
-import com.nukkitx.protocol.bedrock.packet.RespawnPacket;
-import com.nukkitx.protocol.bedrock.packet.SetEntityLinkPacket;
+import org.cloudburstmc.math.vector.Vector3d;
+import org.cloudburstmc.math.vector.Vector3f;
+import org.cloudburstmc.protocol.bedrock.packet.ChunkRadiusUpdatedPacket;
+import org.cloudburstmc.protocol.bedrock.packet.MovePlayerPacket;
+import org.cloudburstmc.protocol.bedrock.packet.RespawnPacket;
 import org.geysermc.geyser.entity.EntityDefinitions;
-import org.geysermc.geyser.entity.type.Entity;
 import org.geysermc.geyser.entity.type.player.SessionPlayerEntity;
 import org.geysermc.geyser.session.GeyserSession;
 import org.geysermc.geyser.session.cache.TeleportCache;
 import org.geysermc.geyser.translator.protocol.PacketTranslator;
 import org.geysermc.geyser.translator.protocol.Translator;
 import org.geysermc.geyser.util.ChunkUtils;
-import org.geysermc.geyser.util.EntityUtils;
+import org.geysermc.mcprotocollib.protocol.data.game.entity.player.PositionElement;
+import org.geysermc.mcprotocollib.protocol.packet.ingame.clientbound.entity.player.ClientboundPlayerPositionPacket;
+import org.geysermc.mcprotocollib.protocol.packet.ingame.serverbound.level.ServerboundAcceptTeleportationPacket;
+import org.geysermc.mcprotocollib.protocol.packet.ingame.serverbound.player.ServerboundMovePlayerPosRotPacket;
 
 @Translator(packet = ClientboundPlayerPositionPacket.class)
 public class JavaPlayerPositionTranslator extends PacketTranslator<ClientboundPlayerPositionPacket> {
@@ -54,14 +51,15 @@ public class JavaPlayerPositionTranslator extends PacketTranslator<ClientboundPl
             return;
 
         SessionPlayerEntity entity = session.getPlayerEntity();
+        Vector3d pos = packet.getPosition();
 
         if (!session.isSpawned()) {
+            // TODO this behavior seems outdated (1.21.2).
             // The server sends an absolute teleport everytime the player is respawned
-            Vector3f pos = Vector3f.from(packet.getX(), packet.getY(), packet.getZ());
-            entity.setPosition(pos);
-            entity.setYaw(packet.getYaw());
-            entity.setPitch(packet.getPitch());
-            entity.setHeadYaw(packet.getYaw());
+            entity.setPosition(pos.toFloat());
+            entity.setYaw(packet.getYRot());
+            entity.setPitch(packet.getXRot());
+            entity.setHeadYaw(packet.getYRot());
 
             RespawnPacket respawnPacket = new RespawnPacket();
             respawnPacket.setRuntimeEntityId(0); // Bedrock server behavior
@@ -78,11 +76,17 @@ public class JavaPlayerPositionTranslator extends PacketTranslator<ClientboundPl
             movePlayerPacket.setMode(MovePlayerPacket.Mode.RESPAWN);
 
             session.sendUpstreamPacket(movePlayerPacket);
+
+            // Fixes incorrect rotation upon login
+            // Yes, even that's not respected by Bedrock. Try it out in singleplayer!
+            // Log out and back in - and you're looking elsewhere :)
+            entity.updateOwnRotation(entity.getYaw(), entity.getPitch(), entity.getHeadYaw());
+
             session.setSpawned(true);
             // Make sure the player moves away from (0, 32767, 0) before accepting movement packets
-            session.setUnconfirmedTeleport(new TeleportCache(packet.getX(), packet.getY(), packet.getZ(), packet.getPitch(), packet.getYaw(), packet.getTeleportId()));
+            session.setUnconfirmedTeleport(new TeleportCache(packet.getPosition().getX(), packet.getPosition().getY(), packet.getPosition().getZ(), packet.getXRot(), packet.getYRot(), packet.getId())); // TODO
 
-            acceptTeleport(session, packet.getX(), packet.getY(), packet.getZ(), packet.getYaw(), packet.getPitch(), packet.getTeleportId());
+            acceptTeleport(session, packet.getPosition().getX(), packet.getPosition().getY(), packet.getPosition().getZ(), packet.getYRot(), packet.getXRot(), packet.getId());
 
             if (session.getServerRenderDistance() > 32 && !session.isEmulatePost1_13Logic()) {
                 // See DimensionUtils for an explanation
@@ -96,44 +100,23 @@ public class JavaPlayerPositionTranslator extends PacketTranslator<ClientboundPl
             ChunkUtils.updateChunkPosition(session, pos.toInt());
 
             if (session.getGeyser().getConfig().isDebugMode()) {
-                session.getGeyser().getLogger().debug("Spawned player at " + packet.getX() + " " + packet.getY() + " " + packet.getZ());
+                session.getGeyser().getLogger().debug("Spawned player at " + packet.getPosition());
             }
             return;
         }
 
-        Entity vehicle;
-        if (packet.isDismountVehicle() && (vehicle = session.getPlayerEntity().getVehicle()) != null) {
-            SetEntityLinkPacket linkPacket = new SetEntityLinkPacket();
-            linkPacket.setEntityLink(new EntityLinkData(vehicle.getGeyserId(), entity.getGeyserId(), EntityLinkData.Type.REMOVE, false, false));
-            session.sendUpstreamPacket(linkPacket);
-
-            vehicle.getPassengers().remove(entity);
-            session.getPlayerEntity().setVehicle(null);
-
-            EntityUtils.updateRiderRotationLock(entity, null, false);
-            EntityUtils.updateMountOffset(entity, null, false, false, entity.getPassengers().size() > 1);
-            entity.updateBedrockMetadata();
-
-            if (session.getMountVehicleScheduledFuture() != null) {
-                // Cancel this task as it is now unnecessary.
-                // Note that this isn't present in JavaSetPassengersTranslator as that code is not called for players
-                // as of Java 1.19.3, but the scheduled future checks for the vehicle being null anyway.
-                session.getMountVehicleScheduledFuture().cancel(false);
-            }
-        }
-
         // If coordinates are relative, then add to the existing coordinate
-        double newX = packet.getX() +
-                (packet.getRelative().contains(PositionElement.X) ? entity.getPosition().getX() : 0);
-        double newY = packet.getY() +
-                (packet.getRelative().contains(PositionElement.Y) ? entity.getPosition().getY() - EntityDefinitions.PLAYER.offset() : 0);
-        double newZ = packet.getZ() +
-                (packet.getRelative().contains(PositionElement.Z) ? entity.getPosition().getZ() : 0);
+        double newX = pos.getX() +
+                (packet.getRelatives().contains(PositionElement.X) ? entity.getPosition().getX() : 0);
+        double newY = pos.getY() +
+                (packet.getRelatives().contains(PositionElement.Y) ? entity.getPosition().getY() - EntityDefinitions.PLAYER.offset() : 0);
+        double newZ = pos.getZ() +
+                (packet.getRelatives().contains(PositionElement.Z) ? entity.getPosition().getZ() : 0);
 
-        float newPitch = packet.getPitch() + (packet.getRelative().contains(PositionElement.PITCH) ? entity.getPitch() : 0);
-        float newYaw = packet.getYaw() + (packet.getRelative().contains(PositionElement.YAW) ? entity.getYaw() : 0);
+        float newPitch = packet.getXRot() + (packet.getRelatives().contains(PositionElement.X_ROT) ? entity.getPitch() : 0);
+        float newYaw = packet.getYRot() + (packet.getRelatives().contains(PositionElement.Y_ROT) ? entity.getYaw() : 0);
 
-        int id = packet.getTeleportId();
+        int id = packet.getId();
 
         session.getGeyser().getLogger().debug("Teleport (" + id + ") from " + entity.getPosition().getX() + " " + (entity.getPosition().getY() - EntityDefinitions.PLAYER.offset()) + " " + entity.getPosition().getZ());
 
@@ -158,9 +141,9 @@ public class JavaPlayerPositionTranslator extends PacketTranslator<ClientboundPl
     private void acceptTeleport(GeyserSession session, double x, double y, double z, float yaw, float pitch, int id) {
         // Confirm the teleport when we receive it to match Java edition
         ServerboundAcceptTeleportationPacket teleportConfirmPacket = new ServerboundAcceptTeleportationPacket(id);
-        session.sendDownstreamPacket(teleportConfirmPacket);
+        session.sendDownstreamGamePacket(teleportConfirmPacket);
         // Servers (especially ones like Hypixel) expect exact coordinates given back to them.
-        ServerboundMovePlayerPosRotPacket positionPacket = new ServerboundMovePlayerPosRotPacket(false, x, y, z, yaw, pitch);
-        session.sendDownstreamPacket(positionPacket);
+        ServerboundMovePlayerPosRotPacket positionPacket = new ServerboundMovePlayerPosRotPacket(false, false, x, y, z, yaw, pitch);
+        session.sendDownstreamGamePacket(positionPacket);
     }
 }

@@ -25,24 +25,30 @@
 
 package org.geysermc.geyser.translator.protocol.java.level;
 
-import com.github.steveice10.mc.protocol.data.game.entity.metadata.ItemStack;
-import com.github.steveice10.mc.protocol.data.game.level.particle.*;
-import com.github.steveice10.mc.protocol.data.game.level.particle.positionsource.BlockPositionSource;
-import com.github.steveice10.mc.protocol.data.game.level.particle.positionsource.EntityPositionSource;
-import com.github.steveice10.mc.protocol.packet.ingame.clientbound.level.ClientboundLevelParticlesPacket;
-import com.nukkitx.math.vector.Vector3f;
-import com.nukkitx.nbt.NbtMap;
-import com.nukkitx.protocol.bedrock.BedrockPacket;
-import com.nukkitx.protocol.bedrock.data.LevelEventType;
-import com.nukkitx.protocol.bedrock.data.inventory.ItemData;
-import com.nukkitx.protocol.bedrock.packet.LevelEventGenericPacket;
-import com.nukkitx.protocol.bedrock.packet.LevelEventPacket;
-import com.nukkitx.protocol.bedrock.packet.SpawnParticleEffectPacket;
+import org.geysermc.mcprotocollib.protocol.data.game.item.ItemStack;
+import org.geysermc.mcprotocollib.protocol.data.game.level.particle.BlockParticleData;
+import org.geysermc.mcprotocollib.protocol.data.game.level.particle.DustParticleData;
+import org.geysermc.mcprotocollib.protocol.data.game.level.particle.ItemParticleData;
+import org.geysermc.mcprotocollib.protocol.data.game.level.particle.Particle;
+import org.geysermc.mcprotocollib.protocol.data.game.level.particle.VibrationParticleData;
+import org.geysermc.mcprotocollib.protocol.data.game.level.particle.positionsource.BlockPositionSource;
+import org.geysermc.mcprotocollib.protocol.data.game.level.particle.positionsource.EntityPositionSource;
+import org.geysermc.mcprotocollib.protocol.packet.ingame.clientbound.level.ClientboundLevelParticlesPacket;
+import org.checkerframework.checker.nullness.qual.Nullable;
+import org.cloudburstmc.nbt.NbtMap;
+import org.cloudburstmc.math.vector.Vector3f;
+import org.cloudburstmc.protocol.bedrock.data.LevelEvent;
+import org.cloudburstmc.protocol.bedrock.data.ParticleType;
+import org.cloudburstmc.protocol.bedrock.data.inventory.ItemData;
+import org.cloudburstmc.protocol.bedrock.packet.BedrockPacket;
+import org.cloudburstmc.protocol.bedrock.packet.LevelEventGenericPacket;
+import org.cloudburstmc.protocol.bedrock.packet.LevelEventPacket;
+import org.cloudburstmc.protocol.bedrock.packet.SpawnParticleEffectPacket;
 import org.geysermc.geyser.entity.type.Entity;
 import org.geysermc.geyser.registry.Registries;
 import org.geysermc.geyser.registry.type.ParticleMapping;
 import org.geysermc.geyser.session.GeyserSession;
-import org.geysermc.geyser.translator.inventory.item.ItemTranslator;
+import org.geysermc.geyser.translator.item.ItemTranslator;
 import org.geysermc.geyser.translator.protocol.PacketTranslator;
 import org.geysermc.geyser.translator.protocol.Translator;
 import org.geysermc.geyser.util.DimensionUtils;
@@ -54,6 +60,7 @@ import java.util.function.Function;
 
 @Translator(packet = ClientboundLevelParticlesPacket.class)
 public class JavaLevelParticlesTranslator extends PacketTranslator<ClientboundLevelParticlesPacket> {
+    private static final int MAX_PARTICLES = 100;
 
     @Override
     public void translate(GeyserSession session, ClientboundLevelParticlesPacket packet) {
@@ -65,7 +72,8 @@ public class JavaLevelParticlesTranslator extends PacketTranslator<ClientboundLe
                 session.sendUpstreamPacket(particleCreateFunction.apply(position));
             } else {
                 Random random = ThreadLocalRandom.current();
-                for (int i = 0; i < packet.getAmount(); i++) {
+                int amount = Math.min(MAX_PARTICLES, packet.getAmount());
+                for (int i = 0; i < amount; i++) {
                     double offsetX = random.nextGaussian() * (double) packet.getOffsetX();
                     double offsetY = random.nextGaussian() * (double) packet.getOffsetY();
                     double offsetZ = random.nextGaussian() * (double) packet.getOffsetZ();
@@ -86,25 +94,25 @@ public class JavaLevelParticlesTranslator extends PacketTranslator<ClientboundLe
      * @return a function to create a packet with a specified particle, in the event we need to spawn multiple particles
      * with different offsets.
      */
-    private Function<Vector3f, BedrockPacket> createParticle(GeyserSession session, Particle particle) {
+    public static @Nullable Function<Vector3f, BedrockPacket> createParticle(GeyserSession session, Particle particle) {
         switch (particle.getType()) {
             case BLOCK -> {
                 int blockState = session.getBlockMappings().getBedrockBlockId(((BlockParticleData) particle.getData()).getBlockState());
                 return (position) -> {
                     LevelEventPacket packet = new LevelEventPacket();
-                    packet.setType(LevelEventType.PARTICLE_CRACK_BLOCK);
+                    packet.setType(LevelEvent.PARTICLE_CRACK_BLOCK);
                     packet.setPosition(position);
                     packet.setData(blockState);
                     return packet;
                 };
             }
             case FALLING_DUST -> {
-                int blockState = session.getBlockMappings().getBedrockBlockId(((FallingDustParticleData) particle.getData()).getBlockState());
+                int blockState = session.getBlockMappings().getBedrockBlockId(((BlockParticleData) particle.getData()).getBlockState());
                 return (position) -> {
                     LevelEventPacket packet = new LevelEventPacket();
                     // In fact, FallingDustParticle should have data like DustParticle,
                     // but in MCProtocol, its data is BlockState(1).
-                    packet.setType(LevelEventType.PARTICLE_FALLING_DUST);
+                    packet.setType(ParticleType.FALLING_DUST);
                     packet.setData(blockState);
                     packet.setPosition(position);
                     return packet;
@@ -113,10 +121,10 @@ public class JavaLevelParticlesTranslator extends PacketTranslator<ClientboundLe
             case ITEM -> {
                 ItemStack javaItem = ((ItemParticleData) particle.getData()).getItemStack();
                 ItemData bedrockItem = ItemTranslator.translateToBedrock(session, javaItem);
-                int data = bedrockItem.getId() << 16 | bedrockItem.getDamage();
+                int data = bedrockItem.getDefinition().getRuntimeId() << 16 | bedrockItem.getDamage();
                 return (position) -> {
                     LevelEventPacket packet = new LevelEventPacket();
-                    packet.setType(LevelEventType.PARTICLE_ITEM_BREAK);
+                    packet.setType(ParticleType.ICON_CRACK);
                     packet.setData(data);
                     packet.setPosition(position);
                     return packet;
@@ -124,13 +132,10 @@ public class JavaLevelParticlesTranslator extends PacketTranslator<ClientboundLe
             }
             case DUST, DUST_COLOR_TRANSITION -> { //TODO
                 DustParticleData data = (DustParticleData) particle.getData();
-                int r = (int) (data.getRed() * 255);
-                int g = (int) (data.getGreen() * 255);
-                int b = (int) (data.getBlue() * 255);
-                int rgbData = ((0xff) << 24) | ((r & 0xff) << 16) | ((g & 0xff) << 8) | (b & 0xff);
+                int rgbData = data.getColor();
                 return (position) -> {
                     LevelEventPacket packet = new LevelEventPacket();
-                    packet.setType(LevelEventType.PARTICLE_FALLING_DUST);
+                    packet.setType(ParticleType.FALLING_DUST);
                     packet.setData(rgbData);
                     packet.setPosition(position);
                     return packet;
@@ -157,7 +162,7 @@ public class JavaLevelParticlesTranslator extends PacketTranslator<ClientboundLe
 
                 return (position) -> {
                     LevelEventGenericPacket packet = new LevelEventGenericPacket();
-                    packet.setEventId(2027/*LevelEventType.PARTICLE_VIBRATION_SIGNAL*/);
+                    packet.setType(LevelEvent.PARTICLE_VIBRATION_SIGNAL);
                     packet.setTag(
                             NbtMap.builder()
                                     .putCompound("origin", buildVec3PositionTag(position))
@@ -183,7 +188,7 @@ public class JavaLevelParticlesTranslator extends PacketTranslator<ClientboundLe
                         return packet;
                     };
                 } else if (particleMapping.identifier() != null) {
-                    int dimensionId = DimensionUtils.javaToBedrock(session.getDimension());
+                    int dimensionId = DimensionUtils.javaToBedrock(session);
                     return (position) -> {
                         SpawnParticleEffectPacket stringPacket = new SpawnParticleEffectPacket();
                         stringPacket.setIdentifier(particleMapping.identifier());
@@ -199,7 +204,7 @@ public class JavaLevelParticlesTranslator extends PacketTranslator<ClientboundLe
         }
     }
 
-    private NbtMap buildVec3PositionTag(Vector3f position) {
+    private static NbtMap buildVec3PositionTag(Vector3f position) {
         return NbtMap.builder()
                 .putString("type", "vec3")
                 .putFloat("x", position.getX())

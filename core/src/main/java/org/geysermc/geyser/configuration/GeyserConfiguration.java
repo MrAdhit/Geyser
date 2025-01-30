@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2019-2022 GeyserMC. http://geysermc.org
+ * Copyright (c) 2019-2024 GeyserMC. http://geysermc.org
  *
  * Permission is hereby granted, free of charge, to any person obtaining a copy
  * of this software and associated documentation files (the "Software"), to deal
@@ -27,6 +27,7 @@ package org.geysermc.geyser.configuration;
 
 import com.fasterxml.jackson.annotation.JsonIgnore;
 import org.geysermc.geyser.GeyserLogger;
+import org.geysermc.geyser.api.network.AuthType;
 import org.geysermc.geyser.api.network.BedrockListener;
 import org.geysermc.geyser.api.network.RemoteServer;
 import org.geysermc.geyser.network.CIDRMatcher;
@@ -35,9 +36,12 @@ import org.geysermc.geyser.text.GeyserLocale;
 
 import java.nio.file.Path;
 import java.util.List;
-import java.util.Map;
 
 public interface GeyserConfiguration {
+    /**
+     * If the config was originally 'auto' before the values changed
+     */
+    void setAutoconfiguredRemote(boolean autoconfiguredRemote);
 
     // Modify this when you introduce breaking changes into the config
     int CURRENT_CONFIG_VERSION = 4;
@@ -48,16 +52,11 @@ public interface GeyserConfiguration {
 
     List<String> getSavedUserLogins();
 
-    @Deprecated
-    Map<String, ? extends IUserAuthenticationInfo> getUserAuths();
-
+    @SuppressWarnings("BooleanMethodIsAlwaysInverted")
     boolean isCommandSuggestions();
 
     @JsonIgnore
     boolean isPassthroughMotd();
-
-    @JsonIgnore
-    boolean isPassthroughProtocolName();
 
     @JsonIgnore
     boolean isPassthroughPlayerCounts();
@@ -73,8 +72,10 @@ public interface GeyserConfiguration {
 
     boolean isDebugMode();
 
+    @Deprecated
     boolean isAllowThirdPartyCapes();
 
+    @Deprecated
     boolean isAllowThirdPartyEars();
 
     String getShowCooldown();
@@ -82,8 +83,6 @@ public interface GeyserConfiguration {
     boolean isShowCoordinates();
 
     boolean isDisableBedrockScaffolding();
-
-    boolean isAlwaysQuickChangeArmor();
 
     EmoteOffhandWorkaroundOption getEmoteOffhandWorkaround();
 
@@ -97,6 +96,7 @@ public interface GeyserConfiguration {
 
     boolean isForceResourcePacks();
 
+    @SuppressWarnings("BooleanMethodIsAlwaysInverted")
     boolean isXboxAchievementsEnabled();
 
     int getCacheImages();
@@ -117,7 +117,14 @@ public interface GeyserConfiguration {
 
     int getPendingAuthenticationTimeout();
 
+    boolean isAutoconfiguredRemote();
+
     interface IBedrockConfiguration extends BedrockListener {
+        void setAddress(String address);
+
+        void setPort(int port);
+
+        void setBroadcastPort(int broadcastPort);
 
         boolean isCloneRemotePort();
 
@@ -139,8 +146,6 @@ public interface GeyserConfiguration {
 
         void setPort(int port);
 
-        boolean isPasswordAuthentication();
-
         boolean isUseProxyProtocol();
 
         boolean isForwardHost();
@@ -152,18 +157,8 @@ public interface GeyserConfiguration {
         default int protocolVersion() {
             return GameProtocol.getJavaProtocolVersion();
         }
-    }
 
-    interface IUserAuthenticationInfo {
-        String getEmail();
-
-        String getPassword();
-
-        /**
-         * Will be removed after Microsoft accounts are fully migrated
-         */
-        @Deprecated
-        boolean isMicrosoftAccount();
+        void setAuthType(AuthType authType);
     }
 
     interface IMetricsInfo {

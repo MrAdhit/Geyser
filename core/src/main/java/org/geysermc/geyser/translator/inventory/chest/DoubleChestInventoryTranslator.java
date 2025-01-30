@@ -25,20 +25,25 @@
 
 package org.geysermc.geyser.translator.inventory.chest;
 
-import com.nukkitx.math.vector.Vector3i;
-import com.nukkitx.nbt.NbtMap;
-import com.nukkitx.nbt.NbtMapBuilder;
-import com.nukkitx.protocol.bedrock.data.inventory.ContainerType;
-import com.nukkitx.protocol.bedrock.packet.BlockEntityDataPacket;
-import com.nukkitx.protocol.bedrock.packet.ContainerClosePacket;
-import com.nukkitx.protocol.bedrock.packet.ContainerOpenPacket;
-import com.nukkitx.protocol.bedrock.packet.UpdateBlockPacket;
+import org.cloudburstmc.math.vector.Vector3i;
+import org.cloudburstmc.nbt.NbtMap;
+import org.cloudburstmc.nbt.NbtMapBuilder;
+import org.cloudburstmc.protocol.bedrock.data.definitions.BlockDefinition;
+import org.cloudburstmc.protocol.bedrock.data.inventory.ContainerType;
+import org.cloudburstmc.protocol.bedrock.packet.BlockEntityDataPacket;
+import org.cloudburstmc.protocol.bedrock.packet.ContainerClosePacket;
+import org.cloudburstmc.protocol.bedrock.packet.ContainerOpenPacket;
+import org.cloudburstmc.protocol.bedrock.packet.UpdateBlockPacket;
 import org.geysermc.geyser.inventory.Container;
 import org.geysermc.geyser.inventory.Inventory;
-import org.geysermc.geyser.level.block.BlockStateValues;
-import org.geysermc.geyser.level.block.DoubleChestValue;
+import org.geysermc.geyser.level.block.Blocks;
+import org.geysermc.geyser.level.block.property.ChestType;
+import org.geysermc.geyser.level.block.property.Properties;
+import org.geysermc.geyser.level.block.type.BlockState;
+import org.geysermc.geyser.level.physics.Direction;
 import org.geysermc.geyser.registry.BlockRegistries;
 import org.geysermc.geyser.session.GeyserSession;
+import org.geysermc.geyser.translator.level.block.entity.BlockEntityTranslator;
 import org.geysermc.geyser.translator.level.block.entity.DoubleChestBlockEntityTranslator;
 import org.geysermc.geyser.util.InventoryUtils;
 
@@ -47,38 +52,36 @@ public class DoubleChestInventoryTranslator extends ChestInventoryTranslator {
 
     public DoubleChestInventoryTranslator(int size) {
         super(size, 54);
-        this.defaultJavaBlockState = BlockRegistries.JAVA_IDENTIFIERS.get("minecraft:chest[facing=north,type=single,waterlogged=false]");
+        this.defaultJavaBlockState = Blocks.CHEST.defaultBlockState()
+                .withValue(Properties.HORIZONTAL_FACING, Direction.NORTH)
+                .withValue(Properties.CHEST_TYPE, ChestType.SINGLE)
+                .javaId();
     }
 
     @Override
     public boolean prepareInventory(GeyserSession session, Inventory inventory) {
         // See BlockInventoryHolder - same concept there except we're also dealing with a specific block state
         if (session.getLastInteractionPlayerPosition().equals(session.getPlayerEntity().getPosition())) {
-            int javaBlockId = session.getGeyser().getWorldManager().getBlockAt(session, session.getLastInteractionBlockPosition());
-            String[] javaBlockString = BlockRegistries.JAVA_IDENTIFIERS.get().getOrDefault(javaBlockId, "minecraft:air").split("\\[");
-            if (javaBlockString.length > 1 && (javaBlockString[0].equals("minecraft:chest") || javaBlockString[0].equals("minecraft:trapped_chest"))
-                    && !javaBlockString[1].contains("type=single")) {
-                inventory.setHolderPosition(session.getLastInteractionBlockPosition());
-                ((Container) inventory).setUsingRealBlock(true, javaBlockString[0]);
+            BlockState state = session.getGeyser().getWorldManager().blockAt(session, session.getLastInteractionBlockPosition());
+            if (!BlockRegistries.CUSTOM_BLOCK_STATE_OVERRIDES.get().containsKey(state.javaId())) {
+                if ((state.block() == Blocks.CHEST || state.block() == Blocks.TRAPPED_CHEST)
+                        && state.getValue(Properties.CHEST_TYPE) != ChestType.SINGLE) {
+                    inventory.setHolderPosition(session.getLastInteractionBlockPosition());
+                    ((Container) inventory).setUsingRealBlock(true, state.block());
 
-                NbtMapBuilder tag = NbtMap.builder()
-                        .putString("id", "Chest")
-                        .putInt("x", session.getLastInteractionBlockPosition().getX())
-                        .putInt("y", session.getLastInteractionBlockPosition().getY())
-                        .putInt("z", session.getLastInteractionBlockPosition().getZ())
-                        .putString("CustomName", inventory.getTitle())
-                        .putString("id", "Chest");
+                    NbtMapBuilder tag = BlockEntityTranslator.getConstantBedrockTag("Chest", session.getLastInteractionBlockPosition())
+                            .putString("CustomName", inventory.getTitle());
 
-                DoubleChestValue chestValue = BlockStateValues.getDoubleChestValues().get(javaBlockId);
-                DoubleChestBlockEntityTranslator.translateChestValue(tag, chestValue,
-                        session.getLastInteractionBlockPosition().getX(), session.getLastInteractionBlockPosition().getZ());
+                    DoubleChestBlockEntityTranslator.translateChestValue(tag, state,
+                            session.getLastInteractionBlockPosition().getX(), session.getLastInteractionBlockPosition().getZ());
 
-                BlockEntityDataPacket dataPacket = new BlockEntityDataPacket();
-                dataPacket.setData(tag.build());
-                dataPacket.setBlockPosition(session.getLastInteractionBlockPosition());
-                session.sendUpstreamPacket(dataPacket);
+                    BlockEntityDataPacket dataPacket = new BlockEntityDataPacket();
+                    dataPacket.setData(tag.build());
+                    dataPacket.setBlockPosition(session.getLastInteractionBlockPosition());
+                    session.sendUpstreamPacket(dataPacket);
 
-                return true;
+                    return true;
+                }
             }
         }
 
@@ -88,20 +91,16 @@ public class DoubleChestInventoryTranslator extends ChestInventoryTranslator {
         }
 
         Vector3i pairPosition = position.add(Vector3i.UNIT_X);
-        int bedrockBlockId = session.getBlockMappings().getBedrockBlockId(defaultJavaBlockState);
+        BlockDefinition definition = session.getBlockMappings().getVanillaBedrockBlock(defaultJavaBlockState);
 
         UpdateBlockPacket blockPacket = new UpdateBlockPacket();
         blockPacket.setDataLayer(0);
         blockPacket.setBlockPosition(position);
-        blockPacket.setRuntimeId(bedrockBlockId);
+        blockPacket.setDefinition(definition);
         blockPacket.getFlags().addAll(UpdateBlockPacket.FLAG_ALL_PRIORITY);
         session.sendUpstreamPacket(blockPacket);
 
-        NbtMap tag = NbtMap.builder()
-                .putString("id", "Chest")
-                .putInt("x", position.getX())
-                .putInt("y", position.getY())
-                .putInt("z", position.getZ())
+        NbtMap tag = BlockEntityTranslator.getConstantBedrockTag("Chest", position)
                 .putInt("pairx", pairPosition.getX())
                 .putInt("pairz", pairPosition.getZ())
                 .putString("CustomName", inventory.getTitle()).build();
@@ -113,7 +112,7 @@ public class DoubleChestInventoryTranslator extends ChestInventoryTranslator {
         blockPacket = new UpdateBlockPacket();
         blockPacket.setDataLayer(0);
         blockPacket.setBlockPosition(pairPosition);
-        blockPacket.setRuntimeId(bedrockBlockId);
+        blockPacket.setDefinition(definition);
         blockPacket.getFlags().addAll(UpdateBlockPacket.FLAG_ALL_PRIORITY);
         session.sendUpstreamPacket(blockPacket);
 
@@ -152,7 +151,8 @@ public class DoubleChestInventoryTranslator extends ChestInventoryTranslator {
             // But send a container close packet because we aren't destroying the original.
             ContainerClosePacket packet = new ContainerClosePacket();
             packet.setId((byte) inventory.getBedrockId());
-            packet.setUnknownBool0(true); //TODO needs to be changed in Protocol to "server-side" or something
+            packet.setServerInitiated(true);
+            packet.setType(ContainerType.MINECART_CHEST);
             session.sendUpstreamPacket(packet);
             return;
         }
@@ -162,7 +162,7 @@ public class DoubleChestInventoryTranslator extends ChestInventoryTranslator {
         UpdateBlockPacket blockPacket = new UpdateBlockPacket();
         blockPacket.setDataLayer(0);
         blockPacket.setBlockPosition(holderPos);
-        blockPacket.setRuntimeId(session.getBlockMappings().getBedrockBlockId(realBlock));
+        blockPacket.setDefinition(session.getBlockMappings().getBedrockBlock(realBlock));
         session.sendUpstreamPacket(blockPacket);
 
         holderPos = holderPos.add(Vector3i.UNIT_X);
@@ -170,7 +170,7 @@ public class DoubleChestInventoryTranslator extends ChestInventoryTranslator {
         blockPacket = new UpdateBlockPacket();
         blockPacket.setDataLayer(0);
         blockPacket.setBlockPosition(holderPos);
-        blockPacket.setRuntimeId(session.getBlockMappings().getBedrockBlockId(realBlock));
+        blockPacket.setDefinition(session.getBlockMappings().getBedrockBlock(realBlock));
         session.sendUpstreamPacket(blockPacket);
     }
 }

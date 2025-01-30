@@ -25,10 +25,8 @@
 
 package org.geysermc.geyser.translator.protocol.bedrock;
 
-import com.nukkitx.protocol.bedrock.packet.TextPacket;
-import org.geysermc.geyser.api.util.TriState;
+import org.cloudburstmc.protocol.bedrock.packet.TextPacket;
 import org.geysermc.geyser.session.GeyserSession;
-import org.geysermc.geyser.text.GeyserLocale;
 import org.geysermc.geyser.translator.protocol.PacketTranslator;
 import org.geysermc.geyser.translator.protocol.Translator;
 import org.geysermc.geyser.translator.text.MessageTranslator;
@@ -38,24 +36,24 @@ public class BedrockTextTranslator extends PacketTranslator<TextPacket> {
 
     @Override
     public void translate(GeyserSession session, TextPacket packet) {
-        String message = MessageTranslator.convertToPlainText(packet.getMessage());
+        // Java trims all messages, and then checks for the leading slash
+        String message = MessageTranslator.convertToPlainText(
+                MessageTranslator.normalizeSpace(packet.getMessage())
+        );
 
         if (message.isBlank()) {
             // Java Edition (as of 1.17.1) just doesn't pass on these messages, so... we won't either!
             return;
         }
 
-        if (MessageTranslator.isTooLong(message, session)) {
+        if (message.startsWith("/")) {
+            // Yes, Java actually allows whitespaces before commands and will still see those as valid
+            BedrockCommandRequestTranslator.handleCommand(session, message.substring(1));
             return;
         }
 
-        if (session.getWorldCache().getChatWarningSent() == TriState.FALSE) {
-            if (Boolean.parseBoolean(System.getProperty("Geyser.PrintSecureChatInformation", "true"))) {
-                session.sendMessage(GeyserLocale.getPlayerLocaleString("geyser.chat.secure_info_1", session.locale()));
-                session.sendMessage(GeyserLocale.getPlayerLocaleString("geyser.chat.secure_info_2", session.locale(), "https://geysermc.link/secure-chat"));
-            }
-            // Never send this message again for this session.
-            session.getWorldCache().setChatWarningSent(TriState.TRUE);
+        if (MessageTranslator.isTooLong(message, session)) {
+            return;
         }
 
         session.sendChat(message);

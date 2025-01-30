@@ -25,11 +25,11 @@
 
 package org.geysermc.geyser.translator.inventory;
 
-import com.github.steveice10.mc.protocol.data.game.inventory.ContainerType;
-import com.nukkitx.protocol.bedrock.data.inventory.ContainerSlotType;
-import com.nukkitx.protocol.bedrock.data.inventory.StackRequestSlotInfoData;
+import org.cloudburstmc.protocol.bedrock.data.inventory.ContainerSlotType;
+import org.cloudburstmc.protocol.bedrock.data.inventory.itemstack.request.ItemStackRequestSlotData;
 import org.geysermc.geyser.inventory.*;
 import org.geysermc.geyser.session.GeyserSession;
+import org.geysermc.mcprotocollib.protocol.data.game.inventory.ContainerType;
 
 public abstract class BaseInventoryTranslator extends InventoryTranslator {
     public BaseInventoryTranslator(int size) {
@@ -42,9 +42,9 @@ public abstract class BaseInventoryTranslator extends InventoryTranslator {
     }
 
     @Override
-    public int bedrockSlotToJava(StackRequestSlotInfoData slotInfoData) {
+    public int bedrockSlotToJava(ItemStackRequestSlotData slotInfoData) {
         int slotnum = slotInfoData.getSlot();
-        switch (slotInfoData.getContainer()) {
+        switch (slotInfoData.getContainerName().getContainer()) {
             case HOTBAR_AND_INVENTORY:
             case HOTBAR:
             case INVENTORY:

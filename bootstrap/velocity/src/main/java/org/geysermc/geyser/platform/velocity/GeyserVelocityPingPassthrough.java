@@ -26,12 +26,15 @@
 package org.geysermc.geyser.platform.velocity;
 
 import com.velocitypowered.api.event.proxy.ProxyPingEvent;
+import com.velocitypowered.api.network.ProtocolState;
 import com.velocitypowered.api.network.ProtocolVersion;
 import com.velocitypowered.api.proxy.InboundConnection;
 import com.velocitypowered.api.proxy.ProxyServer;
 import com.velocitypowered.api.proxy.server.ServerPing;
+import com.velocitypowered.api.proxy.server.ServerPing.Version;
 import lombok.AllArgsConstructor;
 import net.kyori.adventure.text.serializer.legacy.LegacyComponentSerializer;
+import org.geysermc.geyser.network.GameProtocol;
 import org.geysermc.geyser.ping.GeyserPingInfo;
 import org.geysermc.geyser.ping.IGeyserPingPassthrough;
 
@@ -50,23 +53,17 @@ public class GeyserVelocityPingPassthrough implements IGeyserPingPassthrough {
         try {
             event = server.getEventManager().fire(new ProxyPingEvent(new GeyserInboundConnection(inetSocketAddress), ServerPing.builder()
                     .description(server.getConfiguration().getMotd()).onlinePlayers(server.getPlayerCount())
-                    .maximumPlayers(server.getConfiguration().getShowMaxPlayers()).build())).get();
+                    .maximumPlayers(server.getConfiguration().getShowMaxPlayers())
+                    .version(new Version(GameProtocol.getJavaProtocolVersion(), GameProtocol.getJavaMinecraftVersion())) 
+                    .build())).get();
         } catch (ExecutionException | InterruptedException e) {
             throw new RuntimeException(e);
         }
-        GeyserPingInfo geyserPingInfo = new GeyserPingInfo(
+        return new GeyserPingInfo(
                 LegacyComponentSerializer.legacy('§').serialize(event.getPing().getDescriptionComponent()),
-                new GeyserPingInfo.Players(
-                        event.getPing().getPlayers().orElseThrow(IllegalStateException::new).getMax(),
-                        event.getPing().getPlayers().orElseThrow(IllegalStateException::new).getOnline()
-                ),
-                new GeyserPingInfo.Version(
-                        event.getPing().getVersion().getName(),
-                        event.getPing().getVersion().getProtocol()
-                )
+                event.getPing().getPlayers().map(ServerPing.Players::getMax).orElse(1),
+                event.getPing().getPlayers().map(ServerPing.Players::getOnline).orElse(0)
         );
-        event.getPing().getPlayers().get().getSample().stream().map(ServerPing.SamplePlayer::getName).forEach(geyserPingInfo.getPlayerList()::add);
-        return geyserPingInfo;
     }
 
     private static class GeyserInboundConnection implements InboundConnection {
@@ -95,6 +92,11 @@ public class GeyserVelocityPingPassthrough implements IGeyserPingPassthrough {
         @Override
         public ProtocolVersion getProtocolVersion() {
             return ProtocolVersion.MAXIMUM_VERSION;
+        }
+
+        @Override
+        public ProtocolState getProtocolState() {
+            return ProtocolState.STATUS;
         }
     }
 

@@ -25,25 +25,26 @@
 
 package org.geysermc.geyser.entity.type;
 
-import com.github.steveice10.mc.protocol.data.game.entity.metadata.EntityMetadata;
-import com.github.steveice10.mc.protocol.data.game.entity.metadata.ItemStack;
-import com.github.steveice10.mc.protocol.data.game.entity.metadata.type.IntEntityMetadata;
-import com.github.steveice10.mc.protocol.data.game.entity.object.Direction;
-import com.github.steveice10.mc.protocol.data.game.entity.player.Hand;
-import com.github.steveice10.mc.protocol.data.game.entity.type.EntityType;
-import com.nukkitx.math.vector.Vector3f;
-import com.nukkitx.math.vector.Vector3i;
-import com.nukkitx.nbt.NbtMap;
-import com.nukkitx.nbt.NbtMapBuilder;
-import com.nukkitx.protocol.bedrock.data.inventory.ItemData;
-import com.nukkitx.protocol.bedrock.packet.BlockEntityDataPacket;
-import com.nukkitx.protocol.bedrock.packet.UpdateBlockPacket;
 import lombok.Getter;
+import org.cloudburstmc.math.vector.Vector3f;
+import org.cloudburstmc.math.vector.Vector3i;
+import org.cloudburstmc.nbt.NbtMap;
+import org.cloudburstmc.nbt.NbtMapBuilder;
+import org.cloudburstmc.protocol.bedrock.data.definitions.BlockDefinition;
+import org.cloudburstmc.protocol.bedrock.data.inventory.ItemData;
+import org.cloudburstmc.protocol.bedrock.packet.BlockEntityDataPacket;
+import org.cloudburstmc.protocol.bedrock.packet.UpdateBlockPacket;
 import org.geysermc.geyser.entity.EntityDefinition;
 import org.geysermc.geyser.session.GeyserSession;
-import org.geysermc.geyser.translator.inventory.item.ItemTranslator;
+import org.geysermc.geyser.translator.item.ItemTranslator;
 import org.geysermc.geyser.util.InteractionResult;
 import org.geysermc.geyser.util.InventoryUtils;
+import org.geysermc.mcprotocollib.protocol.data.game.entity.metadata.EntityMetadata;
+import org.geysermc.mcprotocollib.protocol.data.game.entity.metadata.type.IntEntityMetadata;
+import org.geysermc.mcprotocollib.protocol.data.game.entity.object.Direction;
+import org.geysermc.mcprotocollib.protocol.data.game.entity.player.Hand;
+import org.geysermc.mcprotocollib.protocol.data.game.entity.type.EntityType;
+import org.geysermc.mcprotocollib.protocol.data.game.item.ItemStack;
 
 import java.util.UUID;
 
@@ -59,7 +60,7 @@ public class ItemFrameEntity extends Entity {
     /**
      * Specific block 'state' we are emulating in Bedrock.
      */
-    private final int bedrockRuntimeId;
+    private final BlockDefinition blockDefinition;
     /**
      * Rotation of item in frame.
      */
@@ -82,15 +83,14 @@ public class ItemFrameEntity extends Entity {
         super(session, entityId, geyserId, uuid, definition, position, motion, yaw, pitch, headYaw);
 
         NbtMapBuilder blockBuilder = NbtMap.builder()
-                .putString("name", this.definition.entityType() == EntityType.GLOW_ITEM_FRAME ? "minecraft:glow_frame" : "minecraft:frame")
-                .putInt("version", session.getBlockMappings().getBlockStateVersion());
+                .putString("name", this.definition.entityType() == EntityType.GLOW_ITEM_FRAME ? "minecraft:glow_frame" : "minecraft:frame");
         NbtMapBuilder statesBuilder = NbtMap.builder()
                 .putInt("facing_direction", direction.ordinal())
                 .putByte("item_frame_map_bit", (byte) 0)
                 .putByte("item_frame_photo_bit", (byte) 0);
         blockBuilder.put("states", statesBuilder.build());
 
-        bedrockRuntimeId = session.getBlockMappings().getItemFrame(blockBuilder.build());
+        blockDefinition = session.getBlockMappings().getItemFrame(blockBuilder.build());
         bedrockPosition = Vector3i.from(position.getFloorX(), position.getFloorY(), position.getFloorZ());
 
         session.getItemFrameCache().put(bedrockPosition, this);
@@ -113,14 +113,23 @@ public class ItemFrameEntity extends Entity {
         if (entityMetadata.getValue() != null) {
             this.heldItem = entityMetadata.getValue();
             ItemData itemData = ItemTranslator.translateToBedrock(session, heldItem);
-
-            String customIdentifier = session.getItemMappings().getCustomIdMappings().get(itemData.getId());
+            String customIdentifier = session.getItemMappings().getCustomIdMappings().get(itemData.getDefinition().getRuntimeId());
 
             NbtMapBuilder builder = NbtMap.builder();
-
             builder.putByte("Count", (byte) itemData.getCount());
-            if (itemData.getTag() != null) {
-                builder.put("tag", itemData.getTag());
+            NbtMap itemDataTag = itemData.getTag();
+            if (itemDataTag != null) {
+                // Remove custom name that Geyser sets for items due to translating non-"custom_name" components
+                String customName = ItemTranslator.getCustomName(session, heldItem.getDataComponents(),
+                    session.getItemMappings().getMapping(heldItem), 'f', true, false);
+                if (customName == null) {
+                    // No custom name found, must modify tag if custom name exists
+                    NbtMapBuilder copy = itemDataTag.toBuilder();
+                    copy.remove("display"); // Also removes lore, but, should not matter
+                    itemDataTag = copy.build();
+                }
+
+                builder.put("tag", itemDataTag);
             }
             builder.putShort("Damage", (short) itemData.getDamage());
             builder.putString("Name", customIdentifier != null ? customIdentifier : session.getItemMappings().getMapping(entityMetadata.getValue()).getBedrockIdentifier());
@@ -148,11 +157,11 @@ public class ItemFrameEntity extends Entity {
     }
 
     @Override
-    public boolean despawnEntity() {
+    public void despawnEntity() {
         UpdateBlockPacket updateBlockPacket = new UpdateBlockPacket();
         updateBlockPacket.setDataLayer(0);
         updateBlockPacket.setBlockPosition(bedrockPosition);
-        updateBlockPacket.setRuntimeId(session.getBlockMappings().getBedrockAirId()); //TODO maybe set this to the world block or another item frame?
+        updateBlockPacket.setDefinition(session.getBlockMappings().getBedrockAir()); //TODO maybe set this to the world block or another item frame?
         updateBlockPacket.getFlags().add(UpdateBlockPacket.Flag.PRIORITY);
         updateBlockPacket.getFlags().add(UpdateBlockPacket.Flag.NETWORK);
         updateBlockPacket.getFlags().add(UpdateBlockPacket.Flag.NEIGHBORS);
@@ -161,7 +170,6 @@ public class ItemFrameEntity extends Entity {
         session.getItemFrameCache().remove(bedrockPosition, this);
 
         valid = false;
-        return true;
     }
 
     private NbtMap getDefaultTag() {
@@ -190,7 +198,7 @@ public class ItemFrameEntity extends Entity {
         UpdateBlockPacket updateBlockPacket = new UpdateBlockPacket();
         updateBlockPacket.setDataLayer(0);
         updateBlockPacket.setBlockPosition(bedrockPosition);
-        updateBlockPacket.setRuntimeId(bedrockRuntimeId);
+        updateBlockPacket.setDefinition(blockDefinition);
         updateBlockPacket.getFlags().add(UpdateBlockPacket.Flag.PRIORITY);
         updateBlockPacket.getFlags().add(UpdateBlockPacket.Flag.NETWORK);
         updateBlockPacket.getFlags().add(UpdateBlockPacket.Flag.NEIGHBORS);

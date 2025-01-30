@@ -25,9 +25,12 @@
 
 package org.geysermc.geyser.translator.protocol.java.level;
 
-import com.github.steveice10.mc.protocol.packet.ingame.clientbound.ClientboundCooldownPacket;
-import com.nukkitx.protocol.bedrock.packet.PlayerStartItemCooldownPacket;
-import org.geysermc.geyser.inventory.item.StoredItemMappings;
+import net.kyori.adventure.key.Key;
+import org.geysermc.mcprotocollib.protocol.packet.ingame.clientbound.ClientboundCooldownPacket;
+import org.cloudburstmc.protocol.bedrock.packet.PlayerStartItemCooldownPacket;
+import org.geysermc.geyser.item.Items;
+import org.geysermc.geyser.item.type.Item;
+import org.geysermc.geyser.registry.Registries;
 import org.geysermc.geyser.session.GeyserSession;
 import org.geysermc.geyser.translator.protocol.PacketTranslator;
 import org.geysermc.geyser.translator.protocol.Translator;
@@ -37,15 +40,17 @@ public class JavaCooldownTranslator extends PacketTranslator<ClientboundCooldown
 
     @Override
     public void translate(GeyserSession session, ClientboundCooldownPacket packet) {
-        StoredItemMappings itemMappings = session.getItemMappings().getStoredItems();
+        // If the cooldown group is a modded item, an item that Bedrock doesn't support custom cooldowns for, or a custom cooldown group,
+        // then the cooldown won't be translated correctly. The cooldown won't show up on Bedrock, but they are still unable to use the item.
+        Key cooldownGroup = packet.getCooldownGroup();
+        Item item = Registries.JAVA_ITEM_IDENTIFIERS.get(cooldownGroup.asString());
 
-        int itemId = packet.getItemId();
         // Not every item, as of 1.19, appears to be server-driven. Just these two.
         // Use a map here if it gets too big.
         String cooldownCategory;
-        if (itemId == itemMappings.goatHorn()) {
+        if (item == Items.GOAT_HORN) {
             cooldownCategory = "goat_horn";
-        } else if (itemId == itemMappings.shield().getJavaId()) {
+        } else if (item == Items.SHIELD) {
             cooldownCategory = "shield";
         } else {
             cooldownCategory = null;
@@ -54,8 +59,10 @@ public class JavaCooldownTranslator extends PacketTranslator<ClientboundCooldown
         if (cooldownCategory != null) {
             PlayerStartItemCooldownPacket bedrockPacket = new PlayerStartItemCooldownPacket();
             bedrockPacket.setItemCategory(cooldownCategory);
-            bedrockPacket.setCooldownDuration(packet.getCooldownTicks());
+            bedrockPacket.setCooldownDuration(Math.round(packet.getCooldownTicks() * (session.getMillisecondsPerTick() / 50)));
             session.sendUpstreamPacket(bedrockPacket);
         }
+
+        session.getWorldCache().setCooldown(cooldownGroup, packet.getCooldownTicks());
     }
 }

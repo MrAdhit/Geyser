@@ -25,166 +25,118 @@
 
 package org.geysermc.geyser.util;
 
-import com.github.steveice10.opennbt.tag.builtin.CompoundTag;
-import com.nukkitx.math.vector.Vector3i;
+import org.cloudburstmc.math.vector.Vector3i;
+import org.geysermc.geyser.entity.attribute.GeyserAttributeType;
 import org.geysermc.geyser.inventory.GeyserItemStack;
-import org.geysermc.geyser.inventory.PlayerInventory;
-import org.geysermc.geyser.level.block.BlockStateValues;
-import org.geysermc.geyser.registry.Registries;
-import org.geysermc.geyser.registry.type.BlockMapping;
-import org.geysermc.geyser.registry.type.ItemMapping;
+import org.geysermc.geyser.level.block.type.Block;
+import org.geysermc.geyser.registry.BlockRegistries;
 import org.geysermc.geyser.session.GeyserSession;
+import org.geysermc.geyser.session.cache.EntityEffectCache;
 import org.geysermc.geyser.translator.collision.BlockCollision;
-
-import javax.annotation.Nullable;
+import org.geysermc.mcprotocollib.protocol.data.game.item.component.DataComponentType;
+import org.geysermc.mcprotocollib.protocol.data.game.item.component.ToolData;
 
 public final class BlockUtils {
 
-    private static boolean correctTool(GeyserSession session, BlockMapping blockMapping, String itemToolType) {
-        switch (itemToolType) {
-            case "axe":
-                return session.getTagCache().isAxeEffective(blockMapping);
-            case "hoe":
-                return session.getTagCache().isHoeEffective(blockMapping);
-            case "pickaxe":
-                return session.getTagCache().isPickaxeEffective(blockMapping);
-            case "shears":
-                return session.getTagCache().isShearsEffective(blockMapping);
-            case "shovel":
-                return session.getTagCache().isShovelEffective(blockMapping);
-            case "sword":
-                return blockMapping.getJavaBlockId() == BlockStateValues.JAVA_COBWEB_ID;
-            default:
-                session.getGeyser().getLogger().warning("Unknown tool type: " + itemToolType);
-                return false;
-        }
-    }
-
-    private static double toolBreakTimeBonus(String toolType, String toolTier, boolean isShearsEffective) {
-        if (toolType.equals("shears")) return isShearsEffective ? 5.0 : 15.0;
-        if (toolType.equals("")) return 1.0;
-        return switch (toolTier) {
-            // https://minecraft.gamepedia.com/Breaking#Speed
-            case "wooden" -> 2.0;
-            case "stone" -> 4.0;
-            case "iron" -> 6.0;
-            case "diamond" -> 8.0;
-            case "netherite" -> 9.0;
-            case "golden" -> 12.0;
-            default -> 1.0;
-        };
-    }
-
-    private static boolean canToolTierBreakBlock(GeyserSession session, BlockMapping blockMapping, String toolTier) {
-        if (toolTier.equals("netherite") || toolTier.equals("diamond")) {
-            // As of 1.17, these tiers can mine everything that is mineable
-            return true;
+    /**
+     * Returns the total mining progress added by mining the block in a single tick
+     * @return the mining progress added by this tick.
+     */
+    public static float getBlockMiningProgressPerTick(GeyserSession session, Block block, GeyserItemStack itemInHand) {
+        float destroySpeed = block.destroyTime();
+        if (destroySpeed == -1) {
+            return 0;
         }
 
-        switch (toolTier) {
-            // Use intentional fall-throughs to check each tier with this block
-            default:
-                if (session.getTagCache().requiresStoneTool(blockMapping)) {
-                    return false;
+        int speedMultiplier = hasCorrectTool(session, block, itemInHand) ? 30 : 100;
+        return getPlayerDestroySpeed(session, block, itemInHand) / destroySpeed / speedMultiplier;
+    }
+
+    private static boolean hasCorrectTool(GeyserSession session, Block block, GeyserItemStack stack) {
+        return !block.requiresCorrectToolForDrops() || isCorrectItemForDrops(session, block, stack);
+    }
+
+    private static boolean isCorrectItemForDrops(GeyserSession session, Block block, GeyserItemStack stack) {
+        ToolData tool = stack.getComponent(DataComponentType.TOOL);
+        if (tool == null) {
+            return false;
+        }
+
+        for (ToolData.Rule rule : tool.getRules()) {
+            if (rule.getCorrectForDrops() != null) {
+                if (session.getTagCache().isBlock(rule.getBlocks(), block)) {
+                    return rule.getCorrectForDrops();
                 }
-            case "stone":
-                if (session.getTagCache().requiresIronTool(blockMapping)) {
-                    return false;
+            }
+        }
+
+        return false;
+    }
+
+    private static float getItemDestroySpeed(GeyserSession session, Block block, GeyserItemStack stack) {
+        ToolData tool = stack.getComponent(DataComponentType.TOOL);
+        if (tool == null) {
+            return 1f;
+        }
+
+        for (ToolData.Rule rule : tool.getRules()) {
+            if (rule.getSpeed() != null) {
+                if (session.getTagCache().isBlock(rule.getBlocks(), block)) {
+                    return rule.getSpeed();
                 }
-            case "iron":
-                if (session.getTagCache().requiresDiamondTool(blockMapping)) {
-                    return false;
-                }
+            }
         }
 
-        return true;
+        return tool.getDefaultMiningSpeed();
     }
 
-    // https://minecraft.gamepedia.com/Breaking
-    private static double calculateBreakTime(double blockHardness, String toolTier, boolean canHarvestWithHand, boolean correctTool, boolean canTierMineBlock,
-                                             String toolType, boolean isShearsEffective, int toolEfficiencyLevel, int hasteLevel, int miningFatigueLevel,
-                                             boolean insideOfWaterWithoutAquaAffinity, boolean onGround) {
-        double baseTime = (((correctTool && canTierMineBlock) || canHarvestWithHand) ? 1.5 : 5.0) * blockHardness;
-        double speed = 1.0 / baseTime;
+    private static float getPlayerDestroySpeed(GeyserSession session, Block block, GeyserItemStack itemInHand) {
+        float destroySpeed = getItemDestroySpeed(session, block, itemInHand);
+        EntityEffectCache effectCache = session.getEffectCache();
 
-        if (correctTool) {
-            speed *= toolBreakTimeBonus(toolType, toolTier, isShearsEffective);
-            speed += toolEfficiencyLevel == 0 ? 0 : toolEfficiencyLevel * toolEfficiencyLevel + 1;
-        }
-        speed *= 1.0 + (0.2 * hasteLevel);
-
-        switch (miningFatigueLevel) {
-            case 0:
-                break;
-            case 1:
-                speed -= (speed * 0.7);
-                break;
-            case 2:
-                speed -= (speed * 0.91);
-                break;
-            case 3:
-                speed -= (speed * 0.9973);
-                break;
-            default:
-                speed -= (speed * 0.99919);
-                break;
+        if (destroySpeed > 1.0F) {
+            destroySpeed += session.getPlayerEntity().attributeOrDefault(GeyserAttributeType.MINING_EFFICIENCY);
         }
 
-        if (insideOfWaterWithoutAquaAffinity) speed *= 0.2;
-        if (!onGround) speed *= 0.2;
-        return 1.0 / speed;
+        int miningSpeedMultiplier = getMiningSpeedAmplification(effectCache);
+        if (miningSpeedMultiplier > 0) {
+            destroySpeed *= miningSpeedMultiplier * 0.2F;
+        }
+
+        if (effectCache.getMiningFatigue() != 0) {
+            float slowdown = switch (effectCache.getMiningFatigue()) {
+                case 1 -> 0.3F;
+                case 2 -> 0.09F;
+                case 3 -> 0.0027F;
+                default -> 8.1E-4F;
+            };
+            destroySpeed *= slowdown;
+        }
+
+        destroySpeed *= session.getPlayerEntity().attributeOrDefault(GeyserAttributeType.BLOCK_BREAK_SPEED);
+        if (session.getCollisionManager().isWaterInEyes()) {
+            destroySpeed *= session.getPlayerEntity().attributeOrDefault(GeyserAttributeType.SUBMERGED_MINING_SPEED);
+        }
+
+        if (!session.getPlayerEntity().isOnGround()) {
+            destroySpeed /= 5F;
+        }
+
+        return destroySpeed;
     }
 
-    public static double getBreakTime(GeyserSession session, BlockMapping blockMapping, ItemMapping item, @Nullable CompoundTag nbtData, boolean isSessionPlayer) {
-        boolean isShearsEffective = session.getTagCache().isShearsEffective(blockMapping); //TODO called twice
-        boolean canHarvestWithHand = blockMapping.isCanBreakWithHand();
-        String toolType = "";
-        String toolTier = "";
-        boolean correctTool = false;
-        boolean toolCanBreak = false;
-        if (item.isTool()) {
-            toolType = item.getToolType();
-            toolTier = item.getToolTier();
-            correctTool = correctTool(session, blockMapping, toolType);
-            toolCanBreak = canToolTierBreakBlock(session, blockMapping, toolTier);
-        }
-        int toolEfficiencyLevel = ItemUtils.getEnchantmentLevel(nbtData, "minecraft:efficiency");
-        int hasteLevel = 0;
-        int miningFatigueLevel = 0;
-
-        if (!isSessionPlayer) {
-            // Another entity is currently mining; we have all the information we know
-            return calculateBreakTime(blockMapping.getHardness(), toolTier, canHarvestWithHand, correctTool, toolCanBreak, toolType, isShearsEffective,
-                    toolEfficiencyLevel, hasteLevel, miningFatigueLevel, false, true);
-        }
-
-        hasteLevel = Math.max(session.getEffectCache().getHaste(), session.getEffectCache().getConduitPower());
-        miningFatigueLevel = session.getEffectCache().getMiningFatigue();
-
-        boolean waterInEyes = session.getCollisionManager().isWaterInEyes();
-        boolean insideOfWaterWithoutAquaAffinity = waterInEyes &&
-                ItemUtils.getEnchantmentLevel(session.getPlayerInventory().getItem(5).getNbt(), "minecraft:aqua_affinity") < 1;
-
-        return calculateBreakTime(blockMapping.getHardness(), toolTier, canHarvestWithHand, correctTool, toolCanBreak, toolType, isShearsEffective,
-                toolEfficiencyLevel, hasteLevel, miningFatigueLevel, insideOfWaterWithoutAquaAffinity, session.getPlayerEntity().isOnGround());
+    private static int getMiningSpeedAmplification(EntityEffectCache cache) {
+        return Math.max(cache.getHaste(), cache.getConduitPower());
     }
 
-    public static double getSessionBreakTime(GeyserSession session, BlockMapping blockMapping) {
-        PlayerInventory inventory = session.getPlayerInventory();
-        GeyserItemStack item = inventory.getItemInHand();
-        ItemMapping mapping = ItemMapping.AIR;
-        CompoundTag nbtData = null;
-        if (item != null) {
-            mapping = item.getMapping(session);
-            nbtData = item.getNbt();
-        }
-        return getBreakTime(session, blockMapping, mapping, nbtData, true);
+    public static double getSessionBreakTimeTicks(GeyserSession session, Block block) {
+        return Math.ceil(1 / getBlockMiningProgressPerTick(session, block, session.getPlayerInventory().getItemInHand()));
     }
 
     /**
      * Given a position, return the position if a block were located on the specified block face.
      * @param blockPos the block position
-     * @param face the face of the block - see {@link com.github.steveice10.mc.protocol.data.game.entity.object.Direction}
+     * @param face the face of the block - see {@link org.geysermc.mcprotocollib.protocol.data.game.entity.object.Direction}
      * @return the block position with the block face accounted for
      */
     public static Vector3i getBlockPosition(Vector3i blockPos, int face) {
@@ -219,15 +171,11 @@ public final class BlockUtils {
     }
 
     public static BlockCollision getCollision(int blockId) {
-        return Registries.COLLISIONS.get(blockId);
+        return BlockRegistries.COLLISIONS.get(blockId);
     }
 
     public static BlockCollision getCollisionAt(GeyserSession session, Vector3i blockPos) {
         return getCollision(session.getGeyser().getWorldManager().getBlockAt(session, blockPos));
-    }
-
-    public static BlockCollision getCollisionAt(GeyserSession session, int x, int y, int z) {
-        return getCollision(session.getGeyser().getWorldManager().getBlockAt(session, x, y, z));
     }
 
     private BlockUtils() {

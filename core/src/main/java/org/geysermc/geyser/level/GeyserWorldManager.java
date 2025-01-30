@@ -25,47 +25,67 @@
 
 package org.geysermc.geyser.level;
 
-import com.nukkitx.nbt.NbtMap;
-import com.nukkitx.nbt.NbtMapBuilder;
 import it.unimi.dsi.fastutil.objects.Object2ObjectMap;
 import it.unimi.dsi.fastutil.objects.Object2ObjectOpenHashMap;
+import org.cloudburstmc.math.vector.Vector3i;
+import org.geysermc.erosion.packet.backendbound.BackendboundBatchBlockRequestPacket;
+import org.geysermc.erosion.packet.backendbound.BackendboundBlockRequestPacket;
+import org.geysermc.erosion.util.BlockPositionIterator;
+import org.geysermc.geyser.erosion.ErosionCancellationException;
 import org.geysermc.geyser.session.GeyserSession;
-import org.geysermc.geyser.translator.inventory.LecternInventoryTranslator;
+import org.geysermc.mcprotocollib.protocol.data.game.entity.player.GameMode;
+
+import java.util.concurrent.CompletableFuture;
 
 public class GeyserWorldManager extends WorldManager {
     private final Object2ObjectMap<String, String> gameruleCache = new Object2ObjectOpenHashMap<>();
 
     @Override
     public int getBlockAt(GeyserSession session, int x, int y, int z) {
-        return session.getChunkCache().getBlockAt(x, y, z);
+        var erosionHandler = session.getErosionHandler().getAsActive();
+        if (erosionHandler == null) {
+            return session.getChunkCache().getBlockAt(x, y, z);
+        } else if (session.isClosed()) {
+            throw new ErosionCancellationException();
+        }
+        CompletableFuture<Integer> future = new CompletableFuture<>(); // Boxes
+        erosionHandler.setPendingLookup(future);
+        erosionHandler.sendPacket(new BackendboundBlockRequestPacket(0, Vector3i.from(x, y, z)));
+        return future.join();
+    }
+
+    @Override
+    public CompletableFuture<Integer> getBlockAtAsync(GeyserSession session, int x, int y, int z) {
+        var erosionHandler = session.getErosionHandler().getAsActive();
+        if (erosionHandler == null) {
+            return super.getBlockAtAsync(session, x, y, z);
+        } else if (session.isClosed()) {
+            return CompletableFuture.failedFuture(new ErosionCancellationException());
+        }
+        CompletableFuture<Integer> future = new CompletableFuture<>(); // Boxes
+        int transactionId = erosionHandler.getNextTransactionId();
+        erosionHandler.getAsyncPendingLookups().put(transactionId, future);
+        erosionHandler.sendPacket(new BackendboundBlockRequestPacket(transactionId, Vector3i.from(x, y, z)));
+        return future;
+    }
+
+    @Override
+    public int[] getBlocksAt(GeyserSession session, BlockPositionIterator iter) {
+        var erosionHandler = session.getErosionHandler().getAsActive();
+        if (erosionHandler == null) {
+            return super.getBlocksAt(session, iter);
+        } else if (session.isClosed()) {
+            throw new ErosionCancellationException();
+        }
+        CompletableFuture<int[]> future = new CompletableFuture<>();
+        erosionHandler.setPendingBatchLookup(future);
+        erosionHandler.sendPacket(new BackendboundBatchBlockRequestPacket(iter));
+        return future.join();
     }
 
     @Override
     public boolean hasOwnChunkCache() {
         // This implementation can only fetch data from the session chunk cache
-        return false;
-    }
-
-    @Override
-    public NbtMap getLecternDataAt(GeyserSession session, int x, int y, int z, boolean isChunkLoad) {
-        // Without direct server access, we can't get lectern information on-the-fly.
-        // I should have set this up so it's only called when there is a book in the block state. - Camotoy
-        NbtMapBuilder lecternTag = LecternInventoryTranslator.getBaseLecternTag(x, y, z, 1);
-        lecternTag.putCompound("book", NbtMap.builder()
-                .putByte("Count", (byte) 1)
-                .putShort("Damage", (short) 0)
-                .putString("Name", "minecraft:written_book")
-                .putCompound("tag", NbtMap.builder()
-                        .putString("photoname", "")
-                        .putString("text", "")
-                        .build())
-                .build());
-        lecternTag.putInt("page", -1); // I'm surprisingly glad this exists - it forces Bedrock to stop reading immediately. Usually.
-        return lecternTag.build();
-    }
-
-    @Override
-    public boolean shouldExpectLecternHandled() {
         return false;
     }
 
@@ -96,7 +116,7 @@ public class GeyserWorldManager extends WorldManager {
     }
 
     @Override
-    public boolean hasPermission(GeyserSession session, String permission) {
-        return false;
+    public GameMode getDefaultGameMode(GeyserSession session) {
+        return GameMode.SURVIVAL;
     }
 }

@@ -25,51 +25,72 @@
 
 package org.geysermc.geyser.entity.type;
 
-import com.github.steveice10.mc.protocol.data.game.entity.metadata.EntityMetadata;
-import com.github.steveice10.mc.protocol.data.game.entity.metadata.Pose;
-import com.github.steveice10.mc.protocol.data.game.entity.metadata.type.BooleanEntityMetadata;
-import com.github.steveice10.mc.protocol.data.game.entity.metadata.type.ByteEntityMetadata;
-import com.github.steveice10.mc.protocol.data.game.entity.metadata.type.IntEntityMetadata;
-import com.github.steveice10.mc.protocol.data.game.entity.player.Hand;
-import com.github.steveice10.mc.protocol.data.game.entity.type.EntityType;
-import com.nukkitx.math.vector.Vector3f;
-import com.nukkitx.protocol.bedrock.data.entity.EntityData;
-import com.nukkitx.protocol.bedrock.data.entity.EntityEventType;
-import com.nukkitx.protocol.bedrock.data.entity.EntityFlag;
-import com.nukkitx.protocol.bedrock.data.entity.EntityFlags;
-import com.nukkitx.protocol.bedrock.packet.*;
 import lombok.AccessLevel;
 import lombok.Getter;
 import lombok.Setter;
 import net.kyori.adventure.text.Component;
+import org.checkerframework.checker.nullness.qual.Nullable;
+import org.cloudburstmc.math.vector.Vector2f;
+import org.cloudburstmc.math.vector.Vector3f;
+import org.cloudburstmc.protocol.bedrock.data.entity.EntityDataTypes;
+import org.cloudburstmc.protocol.bedrock.data.entity.EntityEventType;
+import org.cloudburstmc.protocol.bedrock.data.entity.EntityFlag;
+import org.cloudburstmc.protocol.bedrock.packet.AddEntityPacket;
+import org.cloudburstmc.protocol.bedrock.packet.EntityEventPacket;
+import org.cloudburstmc.protocol.bedrock.packet.MoveEntityAbsolutePacket;
+import org.cloudburstmc.protocol.bedrock.packet.MoveEntityDeltaPacket;
+import org.cloudburstmc.protocol.bedrock.packet.RemoveEntityPacket;
+import org.cloudburstmc.protocol.bedrock.packet.SetEntityDataPacket;
+import org.geysermc.geyser.api.entity.type.GeyserEntity;
 import org.geysermc.geyser.entity.EntityDefinition;
 import org.geysermc.geyser.entity.GeyserDirtyMetadata;
+import org.geysermc.geyser.entity.properties.GeyserEntityPropertyManager;
+import org.geysermc.geyser.item.Items;
+import org.geysermc.geyser.scoreboard.Team;
 import org.geysermc.geyser.session.GeyserSession;
 import org.geysermc.geyser.translator.text.MessageTranslator;
 import org.geysermc.geyser.util.EntityUtils;
 import org.geysermc.geyser.util.InteractionResult;
 import org.geysermc.geyser.util.InteractiveTag;
 import org.geysermc.geyser.util.MathUtils;
+import org.geysermc.mcprotocollib.protocol.data.game.entity.metadata.EntityMetadata;
+import org.geysermc.mcprotocollib.protocol.data.game.entity.metadata.Pose;
+import org.geysermc.mcprotocollib.protocol.data.game.entity.metadata.type.BooleanEntityMetadata;
+import org.geysermc.mcprotocollib.protocol.data.game.entity.metadata.type.ByteEntityMetadata;
+import org.geysermc.mcprotocollib.protocol.data.game.entity.metadata.type.IntEntityMetadata;
+import org.geysermc.mcprotocollib.protocol.data.game.entity.player.Hand;
+import org.geysermc.mcprotocollib.protocol.data.game.entity.type.EntityType;
 
 import java.util.Collections;
+import java.util.EnumSet;
 import java.util.List;
+import java.util.Objects;
 import java.util.Optional;
 import java.util.UUID;
 
 @Getter
 @Setter
-public class Entity {
+public class Entity implements GeyserEntity {
+    private static final boolean PRINT_ENTITY_SPAWN_DEBUG = Boolean.parseBoolean(System.getProperty("Geyser.PrintEntitySpawnDebug", "false"));
+
     protected final GeyserSession session;
 
     protected int entityId;
     protected final long geyserId;
     protected UUID uuid;
+    /**
+     * Do not call this setter directly!
+     * This will bypass the scoreboard and setting the metadata
+     */
+    @Setter(AccessLevel.NONE)
+    protected String nametag = "";
 
     protected Vector3f position;
     protected Vector3f motion;
 
     /**
      * x = Yaw, y = Pitch, z = HeadYaw
+     * Java: Y = Yaw, X = Pitch
      */
     protected float yaw;
     protected float pitch;
@@ -93,7 +114,7 @@ public class Entity {
     @Setter(AccessLevel.NONE)
     private float boundingBoxWidth;
     @Setter(AccessLevel.NONE)
-    protected String nametag = "";
+    private String displayName;
     @Setter(AccessLevel.NONE)
     protected boolean silent = false;
     /* Metadata end */
@@ -110,7 +131,7 @@ public class Entity {
      * think they are set to false.
      */
     @Getter(AccessLevel.NONE)
-    protected final EntityFlags flags = new EntityFlags();
+    protected final EnumSet<EntityFlag> flags = EnumSet.noneOf(EntityFlag.class);
     /**
      * Indicates if flags have been updated and need to be sent to the client.
      */
@@ -118,19 +139,24 @@ public class Entity {
     @Setter(AccessLevel.PROTECTED) // For players
     private boolean flagsDirty = false;
 
+    protected final GeyserEntityPropertyManager propertyManager;
+
     public Entity(GeyserSession session, int entityId, long geyserId, UUID uuid, EntityDefinition<?> definition, Vector3f position, Vector3f motion, float yaw, float pitch, float headYaw) {
         this.session = session;
+        this.definition = definition;
+        this.displayName = standardDisplayName();
 
         this.entityId = entityId;
         this.geyserId = geyserId;
         this.uuid = uuid;
-        this.definition = definition;
         this.motion = motion;
         this.yaw = yaw;
         this.pitch = pitch;
         this.headYaw = headYaw;
 
         this.valid = false;
+
+        this.propertyManager = definition.registeredProperties() == null ? null : new GeyserEntityPropertyManager(definition.registeredProperties());
 
         setPosition(position);
         setAirSupply(getMaxAir());
@@ -142,14 +168,15 @@ public class Entity {
      * Called on entity spawn. Used to populate the entity metadata and flags with default values.
      */
     protected void initializeMetadata() {
-        dirtyMetadata.put(EntityData.SCALE, 1f);
-        dirtyMetadata.put(EntityData.COLOR, (byte) 0);
-        dirtyMetadata.put(EntityData.MAX_AIR_SUPPLY, getMaxAir());
+        dirtyMetadata.put(EntityDataTypes.SCALE, 1f);
+        dirtyMetadata.put(EntityDataTypes.COLOR, (byte) 0);
+        dirtyMetadata.put(EntityDataTypes.AIR_SUPPLY_MAX, getMaxAir());
         setDimensions(Pose.STANDING);
         setFlag(EntityFlag.HAS_GRAVITY, true);
         setFlag(EntityFlag.HAS_COLLISION, true);
         setFlag(EntityFlag.CAN_SHOW_NAME, true);
         setFlag(EntityFlag.CAN_CLIMB, true);
+        setFlag(EntityFlag.HIDDEN_WHEN_INVISIBLE, true);
         // Let the Java server (or us) supply all sounds for an entity
         setClientSideSilent();
     }
@@ -165,7 +192,9 @@ public class Entity {
         addEntityPacket.setUniqueEntityId(geyserId);
         addEntityPacket.setPosition(position);
         addEntityPacket.setMotion(motion);
-        addEntityPacket.setRotation(getBedrockRotation());
+        addEntityPacket.setRotation(Vector2f.from(pitch, yaw));
+        addEntityPacket.setHeadRotation(headYaw);
+        addEntityPacket.setBodyRotation(yaw); // TODO: This should be bodyYaw
         addEntityPacket.getMetadata().putFlags(flags);
         dirtyMetadata.apply(addEntityPacket.getMetadata());
         addAdditionalSpawnData(addEntityPacket);
@@ -175,7 +204,7 @@ public class Entity {
 
         flagsDirty = false;
 
-        if (session.getGeyser().getConfig().isDebugMode()) {
+        if (session.getGeyser().getConfig().isDebugMode() && PRINT_ENTITY_SPAWN_DEBUG) {
             EntityType type = definition.entityType();
             String name = type != null ? type.name() : getClass().getSimpleName();
             session.getGeyser().getLogger().debug("Spawned entity " + name + " at location " + position + " with id " + geyserId + " (java id " + entityId + ")");
@@ -190,11 +219,9 @@ public class Entity {
 
     /**
      * Despawns the entity
-     *
-     * @return can be deleted
      */
-    public boolean despawnEntity() {
-        if (!valid) return true;
+    public void despawnEntity() {
+        if (!valid) return;
 
         for (Entity passenger : passengers) { // Make sure all passengers on the despawned entity are updated
             if (passenger == null) continue;
@@ -208,7 +235,6 @@ public class Entity {
         session.sendUpstreamPacket(removeEntityPacket);
 
         valid = false;
-        return true;
     }
 
     public void moveRelative(double relX, double relY, double relZ, float yaw, float pitch, boolean isOnGround) {
@@ -320,21 +346,21 @@ public class Entity {
     }
 
     public final boolean getFlag(EntityFlag flag) {
-        return flags.getFlag(flag);
+        return this.flags.contains(flag);
     }
 
     /**
      * Updates a flag value and determines if the flags would need synced with the Bedrock client.
      */
     public final void setFlag(EntityFlag flag, boolean value) {
-        flagsDirty |= flags.setFlag(flag, value);
+        flagsDirty |= value ? this.flags.add(flag) : this.flags.remove(flag);
     }
 
     /**
      * Sends the Bedrock metadata to the client
      */
     public void updateBedrockMetadata() {
-        if (!valid) {
+        if (!isValid()) {
             return;
         }
 
@@ -346,6 +372,23 @@ public class Entity {
                 flagsDirty = false;
             }
             dirtyMetadata.apply(entityDataPacket.getMetadata());
+            session.sendUpstreamPacket(entityDataPacket);
+        }
+    }
+
+    /**
+     * Sends the Bedrock entity properties to the client
+     */
+    public void updateBedrockEntityProperties() {
+        if (!valid) {
+            return;
+        }
+
+        if (propertyManager != null && propertyManager.hasProperties()) {
+            SetEntityDataPacket entityDataPacket = new SetEntityDataPacket();
+            entityDataPacket.setRuntimeEntityId(geyserId);
+            propertyManager.applyIntProperties(entityDataPacket.getProperties().getIntProperties());
+            propertyManager.applyFloatProperties(entityDataPacket.getProperties().getFloatProperties());
             session.sendUpstreamPacket(entityDataPacket);
         }
     }
@@ -379,26 +422,93 @@ public class Entity {
     }
 
     protected void setAirSupply(int amount) {
-        dirtyMetadata.put(EntityData.AIR_SUPPLY, (short) MathUtils.constrain(amount, 0, getMaxAir()));
+        dirtyMetadata.put(EntityDataTypes.AIR_SUPPLY, (short) MathUtils.constrain(amount, 0, getMaxAir()));
     }
 
     protected short getMaxAir() {
         return 300;
     }
 
-    public void setDisplayName(EntityMetadata<Optional<Component>, ?> entityMetadata) {
-        Optional<Component> name = entityMetadata.getValue();
-        if (name.isPresent()) {
-            nametag = MessageTranslator.convertMessage(name.get(), session.locale());
-            dirtyMetadata.put(EntityData.NAMETAG, nametag);
-        } else if (!nametag.isEmpty()) {
-            // Clear nametag
-            dirtyMetadata.put(EntityData.NAMETAG, "");
-        }
+    public String teamIdentifier() {
+        // experience orbs are the only known entities that do not send an uuid (even though they do have one),
+        // but to be safe in the future it's done in the entity class itself instead of the entity specific one.
+        // All entities without an uuid cannot show up in the scoreboard!
+        return uuid != null ? uuid.toString() : null;
     }
 
+    public void setDisplayName(EntityMetadata<Optional<Component>, ?> entityMetadata) {
+        // displayName is shown when always display name is enabled. Either with or without team.
+        // That's why there are both a displayName and a nametag variable.
+        // Displayname is ignored for players, and is always their username.
+        Optional<Component> name = entityMetadata.getValue();
+        if (name.isPresent()) {
+            String displayName = MessageTranslator.convertMessage(name.get(), session.locale());
+            this.displayName = displayName;
+            setNametag(displayName, true);
+            return;
+        }
+
+        // if no displayName is set, use entity name (ENDER_DRAGON -> Ender Dragon)
+        // maybe we can/should use a translatable here instead?
+        this.displayName = standardDisplayName();
+        setNametag(null, true);
+    }
+
+    protected String standardDisplayName() {
+        return EntityUtils.translatedEntityName(definition.entityType(), session);
+    }
+
+    protected void setNametag(@Nullable String nametag, boolean fromDisplayName) {
+        // ensure that the team format is used when nametag changes
+        if (nametag != null && fromDisplayName) {
+            var team = session.getWorldCache().getScoreboard().getTeamFor(teamIdentifier());
+            if (team != null) {
+                updateNametag(team);
+                return;
+            }
+        }
+
+        if (nametag == null) {
+            nametag = "";
+        }
+        boolean changed = !Objects.equals(this.nametag, nametag);
+        this.nametag = nametag;
+        // we only update metadata if the value has changed
+        if (!changed) {
+            return;
+        }
+
+        dirtyMetadata.put(EntityDataTypes.NAME, nametag);
+        // if nametag (player with team) is hidden for player, so should the score (belowname)
+        scoreVisibility(!nametag.isEmpty());
+    }
+
+    public void updateNametag(@Nullable Team team) {
+        // allow LivingEntity+ to have a different visibility check
+        updateNametag(team, true);
+    }
+
+    protected void updateNametag(@Nullable Team team, boolean visible) {
+        if (team != null) {
+            String newNametag;
+            // (team) visibility is LivingEntity+, team displayName is Entity+
+            if (visible) {
+                newNametag = team.displayName(getDisplayName());
+            } else {
+                // The name is not visible to the session player; clear name
+                newNametag = "";
+            }
+            setNametag(newNametag, false);
+            return;
+        }
+        // The name has reset, if it was previously something else
+        setNametag(null, false);
+    }
+
+    protected void scoreVisibility(boolean show) {}
+
     public void setDisplayNameVisible(BooleanEntityMetadata entityMetadata) {
-        dirtyMetadata.put(EntityData.NAMETAG_ALWAYS_SHOW, (byte) (entityMetadata.getPrimitiveValue() ? 1 : 0));
+        dirtyMetadata.put(EntityDataTypes.NAMETAG_ALWAYS_SHOW, (byte) (entityMetadata.getPrimitiveValue() ? 1 : 0));
     }
 
     public final void setSilent(BooleanEntityMetadata entityMetadata) {
@@ -431,7 +541,7 @@ public class Entity {
     public boolean setBoundingBoxHeight(float height) {
         if (height != boundingBoxHeight) {
             boundingBoxHeight = height;
-            dirtyMetadata.put(EntityData.BOUNDING_BOX_HEIGHT, boundingBoxHeight);
+            dirtyMetadata.put(EntityDataTypes.HEIGHT, boundingBoxHeight);
 
             updatePassengerOffsets();
             return true;
@@ -442,7 +552,7 @@ public class Entity {
     public void setBoundingBoxWidth(float width) {
         if (width != boundingBoxWidth) {
             boundingBoxWidth = width;
-            dirtyMetadata.put(EntityData.BOUNDING_BOX_WIDTH, boundingBoxWidth);
+            dirtyMetadata.put(EntityDataTypes.WIDTH, boundingBoxWidth);
         }
     }
 
@@ -454,12 +564,12 @@ public class Entity {
         // The Java client caps its freezing tick percentage at 140
         int freezingTicks = Math.min(entityMetadata.getPrimitiveValue(), 140);
         float freezingPercentage = freezingTicks / 140f;
-        dirtyMetadata.put(EntityData.FREEZING_EFFECT_STRENGTH, freezingPercentage);
+        dirtyMetadata.put(EntityDataTypes.FREEZING_EFFECT_STRENGTH, freezingPercentage);
         return freezingPercentage;
     }
 
     public void setRiderSeatPosition(Vector3f position) {
-        dirtyMetadata.put(EntityData.RIDER_SEAT_POSITION, position);
+        dirtyMetadata.put(EntityDataTypes.SEAT_OFFSET, position);
     }
 
     /**
@@ -484,9 +594,10 @@ public class Entity {
      * Update the mount offsets of each passenger on this vehicle
      */
     protected void updatePassengerOffsets() {
-        for (Entity passenger : passengers) {
+        for (int i = 0; i < passengers.size(); i++) {
+            Entity passenger = passengers.get(i);
             if (passenger != null) {
-                boolean rider = passengers.get(0) == this;
+                boolean rider = i == 0;
                 EntityUtils.updateMountOffset(passenger, this, rider, true, passengers.size() > 1);
                 passenger.updateBedrockMetadata();
             }
@@ -504,6 +615,11 @@ public class Entity {
         }
     }
 
+    @Override
+    public int javaId() {
+        return entityId;
+    }
+
     public boolean isAlive() {
         return this.valid;
     }
@@ -519,7 +635,7 @@ public class Entity {
                 break;
             }
         }
-        session.getPlayerEntity().getDirtyMetadata().put(EntityData.INTERACTIVE_TAG, tag.getValue());
+        session.getPlayerEntity().getDirtyMetadata().put(EntityDataTypes.INTERACT_TEXT, tag.getValue());
         session.getPlayerEntity().updateBedrockMetadata();
     }
 
@@ -528,6 +644,17 @@ public class Entity {
      * Should usually mirror {@link #interact(Hand)} without any side effects.
      */
     protected InteractiveTag testInteraction(Hand hand) {
+        if (isAlive() && this instanceof Leashable leashable) {
+            if (leashable.leashHolderBedrockId() == session.getPlayerEntity().getGeyserId()) {
+                // Note this might be client side. Has yet to be an issue though, as of Java 1.21.
+                return InteractiveTag.REMOVE_LEASH;
+            }
+            if (session.getPlayerInventory().getItemInHand(hand).asItem() == Items.LEAD && leashable.canBeLeashed()) {
+                // We shall leash
+                return InteractiveTag.LEASH;
+            }
+        }
+
         return InteractiveTag.NONE;
     }
 
@@ -536,6 +663,18 @@ public class Entity {
      * to ensure packet parity as well as functionality parity (such as sound effect responses).
      */
     public InteractionResult interact(Hand hand) {
+        if (isAlive() && this instanceof Leashable leashable) {
+            if (leashable.leashHolderBedrockId() == session.getPlayerEntity().getGeyserId()) {
+                // Note this might also update client side (a theoretical Geyser/client desync and Java parity issue).
+                // Has yet to be an issue though, as of Java 1.21.
+                return InteractionResult.SUCCESS;
+            }
+            if (session.getPlayerInventory().getItemInHand(hand).asItem() == Items.LEAD && leashable.canBeLeashed()) {
+                // We shall leash
+                return InteractionResult.SUCCESS;
+            }
+        }
+
         return InteractionResult.PASS;
     }
 
@@ -562,10 +701,5 @@ public class Entity {
         packet.setType(type);
         packet.setData(data);
         session.sendUpstreamPacket(packet);
-    }
-
-    @SuppressWarnings("unchecked")
-    public <I extends Entity> I as(Class<I> entityClass) {
-        return entityClass.isInstance(this) ? (I) this : null;
     }
 }

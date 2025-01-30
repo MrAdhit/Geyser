@@ -108,6 +108,15 @@ public interface Extension extends EventRegistrar {
     }
 
     /**
+     * @return the root command that all of this extension's commands will stem from.
+     *         By default, this is the extension's id.
+     */
+    @NonNull
+    default String rootCommand() {
+        return this.description().id();
+    }
+
+    /**
      * Gets the extension's logger
      *
      * @return the extension's logger
@@ -135,5 +144,13 @@ public interface Extension extends EventRegistrar {
     @NonNull
     default GeyserApi geyserApi() {
         return GeyserApi.api();
+    }
+
+    /**
+     * Disable the extension.
+     */
+    default void disable() {
+        this.setEnabled(false);
+        this.eventBus().unregisterAll();
     }
 }
